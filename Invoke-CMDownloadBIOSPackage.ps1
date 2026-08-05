@@ -62,7 +62,7 @@
 	Author:      Nickolaj Andersen / Maurice Daly
     Contact:     @NickolajA / @MoDaly_IT
     Created:     2020-10-30
-    Updated:     2020-10-30
+    Updated:     2026-08-05
     
     Version history:
     3.0.0 - (2020-10-30) - Script created
@@ -71,6 +71,14 @@
 	3.0.2 - (2020-12-09) - Added new functionality to be able to read a custom Application ID URI, if the default of https://ConfigMgrService is not defined on the ServerApp.
 	3.0.3 - (2020-12-10) - Fixed issue in WinPE, with addition of baremetal parameter switch (now default)
 						   Added BIOSUpdate parameter switch for Full OS deployments
+	3.0.4 - (2026-08-05) - Multiple-package selection hardening and fixes:
+						 - Fixed Lenovo model-name fallback that re-sorted an already-nulled package list, causing valid model-type matches to be discarded and the run to bail out (exit 1).
+						 - Unified the "latest package" sort key to SourceDate for HP and Microsoft (previously PackageCreated, which is not a property on the AdminService SMS_Package object, so the list was left unsorted and an older package could be selected).
+						 - Tightened SystemSKU matching to compare whole alphanumeric tokens instead of using -match (regex substring), preventing spurious multi-package matches where a short SKU matched inside another SKU or elsewhere in the description.
+						 - Normalised the reduced package list to an array so .Count and index access behave predictably after Select-Object -First 1.
+						 - Corrected $null comparisons to place $null on the left-hand side.
+						 - Added a documented placeholder (default) branch in Get-ComputerData describing how to add support for custom/unlisted manufacturers.
+						 - Logging improvements for troubleshooting: Invoke-Executable launch failures are now written to the log file (Severity 3) instead of only Write-Warning, and return -1 rather than silently continuing; Get-ComputerData wraps manufacturer detection in try/catch that logs the manufacturer context on failure and degrades gracefully; and a script version + key parameter banner is written at startup.
 
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
@@ -222,10 +230,15 @@ Process {
 		# Invoke executable and wait for process to exit
 		try {
 			$Invocation = Start-Process @SplatArgs
-			$Handle = $Invocation.Handle
+			# Access .Handle to force the process object to cache the handle so WaitForExit()/ExitCode
+			# work reliably; the value itself is intentionally discarded.
+			$null = $Invocation.Handle
 			$Invocation.WaitForExit()
 		} catch [System.Exception] {
-			Write-Warning -Message $_.Exception.Message; break
+			# Log to the CMTrace log file -- Write-Warning alone is not captured in a task sequence,
+			# so a failure to even launch the executable would otherwise leave no trace in the log.
+			Write-CMLogEntry -Value " - Failed to invoke executable '$($FilePath)'. Error message: $($_.Exception.Message)" -Severity 3
+			return -1
 		}
 		
 		return $Invocation.ExitCode
@@ -587,19 +600,19 @@ Process {
 		try {
 			Write-CMLogEntry -Value " - Attempting to locate PSIntuneAuth module" -Severity 1
 			$PSIntuneAuthModule = Get-InstalledModule -Name "PSIntuneAuth" -ErrorAction Stop -Verbose:$false
-			if ($PSIntuneAuthModule -ne $null) {
+			if ($null -ne $PSIntuneAuthModule) {
 				Write-CMLogEntry -Value " - Authentication module detected, checking for latest version" -Severity 1
 				$LatestModuleVersion = (Find-Module -Name "PSIntuneAuth" -ErrorAction SilentlyContinue -Verbose:$false).Version
 				if ($LatestModuleVersion -gt $PSIntuneAuthModule.Version) {
 					Write-CMLogEntry -Value " - Latest version of PSIntuneAuth module is not installed, attempting to install: $($LatestModuleVersion.ToString())" -Severity 1
-					$UpdateModuleInvocation = Update-Module -Name "PSIntuneAuth" -Scope CurrentUser -Force -ErrorAction Stop -Confirm:$false -Verbose:$false
+					$null = Update-Module -Name "PSIntuneAuth" -Scope CurrentUser -Force -ErrorAction Stop -Confirm:$false -Verbose:$false
 				}
 			}
 		} catch [System.Exception] {
 			Write-CMLogEntry -Value " - Unable to detect PSIntuneAuth module, attempting to install from PSGallery" -Severity 2
 			try {
 				# Install NuGet package provider
-				$PackageProvider = Install-PackageProvider -Name "NuGet" -Force -Verbose:$false
+				$null = Install-PackageProvider -Name "NuGet" -Force -Verbose:$false
 				
 				# Install PSIntuneAuth module
 				Install-Module -Name "PSIntuneAuth" -Scope AllUsers -Force -ErrorAction Stop -Confirm:$false -Verbose:$false
@@ -706,7 +719,7 @@ Process {
 		}
 		
 		# Add returned driver package objects to array list
-		if ($AdminServiceResponse.value -ne $null) {
+		if ($null -ne $AdminServiceResponse.value) {
 			foreach ($Package in $AdminServiceResponse.value) {
 				$PackageArray.Add($Package) | Out-Null
 			}
@@ -750,7 +763,7 @@ Process {
 			}
 			
 			# Handle return value
-			if ($Packages -ne $null) {
+			if ($null -ne $Packages) {
 				Write-CMLogEntry -Value " - Retrieved a total of '$(($Packages | Measure-Object).Count)' BIOS packages from $($Script:PackageSource) matching operational mode: $($OperationalMode)" -Severity 1
 				return $Packages
 			} else {
@@ -780,6 +793,12 @@ Process {
 		
 		# Gather computer details based upon specific computer manufacturer
 		$ComputerManufacturer = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Manufacturer).Trim()
+		
+		# Wrapped in try/catch so a failure in any manufacturer-specific WMI/parse step (e.g. a null
+		# BaseBoardProduct, a short Lenovo Model for SubString, or a Dell OEMString without a bracketed
+		# SKU) is logged with the manufacturer context, instead of surfacing only as a generic error
+		# later, and so a non-critical sub-step failure does not abort detection.
+		try {
 		switch -Wildcard ($ComputerManufacturer) {
 			"*Microsoft*" {
 				$ComputerDetails.Manufacturer = "Microsoft"
@@ -827,6 +846,51 @@ Process {
 				$ComputerDetails.Manufacturer = "Fujitsu"
 				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
 				$ComputerDetails.SystemSKU = (Get-WmiObject -Class "Win32_BaseBoard" | Select-Object -ExpandProperty SKU).Trim()
+			}
+			default {
+				# =============================================================================
+				# CUSTOM / UNLISTED MANUFACTURER -- ADD SUPPORT HERE
+				# -----------------------------------------------------------------------------
+				# This default branch is reached when the detected Win32_ComputerSystem
+				# Manufacturer value does not match any of the wildcards above. It performs a
+				# best-effort generic detection (Manufacturer + Model only) so that
+				# ComputerModel-based package matching can still work, and logs a warning that
+				# the manufacturer is not explicitly supported.
+				#
+				# To add full support for a new manufacturer, copy the template below into its
+				# own "*<Manufacturer>*" branch above. The wildcard must match the value reported
+				# by:  (Get-WmiObject -Class Win32_ComputerSystem).Manufacturer
+				# Populate the three key properties from the correct WMI/CIM source for that OEM.
+				# The SystemSKU source differs per vendor -- for example:
+				#   Dell     -> (Get-CIMInstance -ClassName MS_SystemInformation -Namespace root\WMI).SystemSku
+				#   HP       -> (Get-CIMInstance -ClassName MS_SystemInformation -Namespace root\WMI).BaseBoardProduct
+				#   Lenovo   -> first 4 characters of Win32_ComputerSystem.Model (the machine type)
+				#   Others   -> Win32_BaseBoard SKU or Product
+				#
+				# Template (add as a new branch above and adjust the values):
+				#   "*Acme*" {
+				#       $ComputerDetails.Manufacturer = "Acme"
+				#       $ComputerDetails.Model        = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+				#       $ComputerDetails.SystemSKU    = (Get-WmiObject -Class "Win32_BaseBoard" | Select-Object -ExpandProperty SKU).Trim()
+				#   }
+				#
+				# IMPORTANT: adding a branch here is not sufficient on its own. The new
+				# manufacturer name must ALSO be added to the $Manufacturers allow-list inside
+				# the Get-BIOSUpdate function, otherwise any matched packages are filtered out.
+				# =============================================================================
+				$ComputerDetails.Manufacturer = $ComputerManufacturer
+				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+				# SystemSKU intentionally left unset -- add the correct source for this OEM using the template above.
+				Write-CMLogEntry -Value " - Manufacturer '$($ComputerManufacturer)' is not explicitly supported. Using best-effort model detection only. To add full support, see the CUSTOM / UNLISTED MANUFACTURER template in the Get-ComputerData function and add the manufacturer to the `$Manufacturers allow-list in Get-BIOSUpdate." -Severity 2
+			}
+		}
+		}
+		catch [System.Exception] {
+			Write-CMLogEntry -Value " - An error occurred while gathering computer details for manufacturer '$($ComputerManufacturer)'. Error message: $($_.Exception.Message)" -Severity 3
+			# Best-effort fallback so downstream computer-model matching can still proceed.
+			if ([string]::IsNullOrEmpty($ComputerDetails.Manufacturer)) { $ComputerDetails.Manufacturer = $ComputerManufacturer }
+			if ([string]::IsNullOrEmpty($ComputerDetails.Model)) {
+				try { $ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim() } catch { Write-CMLogEntry -Value " - Unable to determine computer model during fallback. Error message: $($_.Exception.Message)" -Severity 3 }
 			}
 		}
 		
@@ -892,12 +956,12 @@ Process {
 			"SystemSKUDetected" = $false
 		}
 		
-		if (($InputObject.Model -ne $null) -and (-not ([System.String]::IsNullOrEmpty($InputObject.Model)))) {
+		if (($null -ne $InputObject.Model) -and (-not ([System.String]::IsNullOrEmpty($InputObject.Model)))) {
 			Write-CMLogEntry -Value " - Computer model detection was successful" -Severity 1
 			$ComputerDetection.ModelDetected = $true
 		}
 		
-		if (($InputObject.SystemSKU -ne $null) -and (-not ([System.String]::IsNullOrEmpty($InputObject.SystemSKU)))) {
+		if (($null -ne $InputObject.SystemSKU) -and (-not ([System.String]::IsNullOrEmpty($InputObject.SystemSKU)))) {
 			Write-CMLogEntry -Value " - Computer SystemSKU detection was successful" -Severity 1
 			$ComputerDetection.SystemSKUDetected = $true
 		}
@@ -1058,8 +1122,8 @@ Process {
 		
 		if ($ComputerSystemType -notin @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM")) {
 			# Process packages returned from web service
-			if ($BIOSPackages -ne $null) {
-				if (($ComputerModel -ne $null) -and (-not ([System.String]::IsNullOrEmpty($ComputerModel))) -or (($SystemSKU -ne $null) -and (-not ([System.String]::IsNullOrEmpty($SystemSKU))))) {
+			if ($null -ne $BIOSPackages) {
+				if (($null -ne $ComputerModel) -and (-not ([System.String]::IsNullOrEmpty($ComputerModel))) -or (($null -ne $SystemSKU) -and (-not ([System.String]::IsNullOrEmpty($SystemSKU))))) {
 					# Determine computer model detection
 					if ([System.String]::IsNullOrEmpty($SystemSKU)) {
 						Write-CMLogEntry -Value "Attempting to find a match for BIOS package: $($Package.PackageName) ($($Package.PackageID))" -Severity 1
@@ -1094,7 +1158,18 @@ Process {
 								}
 							}
 							"SystemSKU" {
-								if ($Package.Description -match $SystemSKU) {
+								# Exact-token SKU match. Previously this used -match, which treats the SKU as a
+								# regex and matches substrings -- a short SKU (e.g. "20X1") could match anywhere in
+								# the description, or match a package whose SKU merely contains it, producing
+								# spurious multi-package matches. Tokenise both sides and compare whole
+								# alphanumeric tokens instead.
+								$ReportedSKUTokens = @($SystemSKU -split '[^A-Za-z0-9]+' | Where-Object { $_ })
+								$PackageSKUTokens = @($Package.Description -split '[^A-Za-z0-9]+' | Where-Object { $_ })
+								$SystemSKUMatched = $false
+								foreach ($SKUToken in $ReportedSKUTokens) {
+									if ($PackageSKUTokens -contains $SKUToken) { $SystemSKUMatched = $true; break }
+								}
+								if ($SystemSKUMatched) {
 									Write-CMLogEntry -Value "Match found for computer model using detection method: $($ComputerDetectionMethod) ($($SystemSKU))" -Severity 1
 									$ComputerDetectionResult = $true
 								} else {
@@ -1169,22 +1244,32 @@ Process {
 								$PackageList = $PackageList | Sort-Object -Property SourceDate -Descending | Select-Object -First 1
 							} elseif ($ComputerManufacturer -eq "Lenovo") {
 								$ComputerDescription = Get-WmiObject -Class Win32_ComputerSystemProduct | Select-Object -ExpandProperty Version
+								# Preserve the full match list so the fallback can use it if the model-name filter
+								# below returns nothing. The previous code re-sorted the already-nulled $PackageList,
+								# so the fallback never actually recovered a package and the run bailed out with exit 1.
+								$LenovoModelMatches = $PackageList
 								# Attempt to find exact model match for Lenovo models which overlap model types
-								$PackageList = $PackageList | Where-object {
+								$PackageList = $LenovoModelMatches | Where-object {
 									($_.Name -like "*$ComputerDescription") -and ($_.Manufacturer -match $ComputerManufacturer)
 								} | Sort-object -Property SourceDate -Descending | Select-Object -First 1
 								
-								If ($PackageList -eq $null) {
+								If ($null -eq $PackageList) {
 									# Fall back to select the latest model type match if no model name match is found
-									$PackageList = $PackageList | Sort-object -Property SourceDate -Descending | Select-Object -First 1
+									$PackageList = $LenovoModelMatches | Sort-object -Property SourceDate -Descending | Select-Object -First 1
 								}
 							} elseif ($ComputerManufacturer -match "Hewlett-Packard|HP") {
-								# Determine the latest BIOS package by creation date
-								$PackageList = $PackageList | Sort-Object -Property PackageCreated -Descending | Select-Object -First 1
+								# Determine the latest BIOS package by creation date. Use SourceDate (a real
+								# SMS_Package property) -- PackageCreated does not exist on the AdminService object,
+								# so Sort-Object silently left the list unsorted and the "latest" selection could
+								# return an older package.
+								$PackageList = $PackageList | Sort-Object -Property SourceDate -Descending | Select-Object -First 1
 
 							} elseif ($ComputerManufacturer -match "Microsoft") {
-								$PackageList = $PackageList | Sort-Object -Property PackageCreated -Descending | Select-Object -First 1
+								$PackageList = $PackageList | Sort-Object -Property SourceDate -Descending | Select-Object -First 1
 							}
+							# Normalise to an array so .Count and [0] indexing behave predictably after the
+							# Select-Object -First 1 reductions above collapse $PackageList to a scalar.
+							$PackageList = @($PackageList | Where-Object { $null -ne $_ })
 							if ($PackageList.Count -eq 1) {
 								# Check if BIOS package is newer than currently installed
 								if ($ComputerManufacturer -match "Dell") {
@@ -1234,11 +1319,13 @@ Process {
 	}
 	
 	Write-CMLogEntry -Value "[ApplyBIOSPackage]: Apply BIOS Package process initiated" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 3.0.4" -Severity 1
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply BIOS package process initiated in debug mode" -Severity 1
 	}
 	Write-CMLogEntry -Value " - Apply BIOS package deployment type: $($PSCmdLet.ParameterSetName)" -Severity 1
 	Write-CMLogEntry -Value " - Apply BIOS package operational mode: $($OperationalMode)" -Severity 1
+	Write-CMLogEntry -Value " - Endpoint: '$($Endpoint)' | Filter: '$($Filter)'" -Severity 1
 	
 	# Set script error preference variable
 	$ErrorActionPreference = "Stop"
