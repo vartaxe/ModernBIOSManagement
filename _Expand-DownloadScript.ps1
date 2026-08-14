@@ -1,0 +1,59 @@
+<#
+.SYNOPSIS
+    One-time expander: writes the full Invoke-CMDownloadBIOSPackage.ps1 (v3.0.5 with -ForceDownload).
+.DESCRIPTION
+    Embeds a gzip+base64 of the complete script. Run once from the repo root:
+      powershell -File .\_Expand-DownloadScript.ps1
+    Then delete this helper. The expanded file is the PR deliverable.
+#>
+$ErrorActionPreference = "Stop"
+$b64 = @"
+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
+"@
+$out = Join-Path $PSScriptRoot "Invoke-CMDownloadBIOSPackage.ps1"
+$gz = [Convert]::FromBase64String(($b64 -replace "\s",""))
+$ms = New-Object System.IO.MemoryStream(,$gz)
+$gs = New-Object System.IO.Compression.GzipStream($ms, [IO.Compression.CompressionMode]::Decompress)
+$fs = [IO.File]::Create($out)
+$gs.CopyTo($fs)
+$fs.Close(); $gs.Close(); $ms.Close()
+Write-Host "Wrote $out ($((Get-Item $out).Length) bytes)"
