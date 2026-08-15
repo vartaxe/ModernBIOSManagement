@@ -13,7 +13,7 @@ After a clean OSD the image is wiped. Re-running the BIOS flash (even on the sam
 | Script | Version | Status |
 |--------|---------|--------|
 | `Invoke-DellBIOSUpdate.ps1` | **v1.2.0** | Ready. Optional `-Force` (adds `/f`). Also auto-enabled by TS variable `SMSTSForceDellBIOSFlash=True` |
-| `Invoke-CMDownloadBIOSPackage.ps1` | base v3.0.4 + `ForceDownload.patch` | Apply the included patch to get **v3.0.5** with `-ForceDownload` support |
+| `Invoke-CMDownloadBIOSPackage.ps1` | **v3.0.5** | Ready. Built-in `-ForceDownload` support |
 
 ### Task Sequence usage (recommended)
 
@@ -27,20 +27,7 @@ Invoke-CMDownloadBIOSPackage.ps1 ...
 Invoke-DellBIOSUpdate.ps1
 ```
 
-The single TS variable enables both the forced download (after patch) and the forced flash.
-
-### Applying the ForceDownload patch (one-time)
-
-```powershell
-# From the repo root
-# Linux / Git Bash:
-patch -p0 < ForceDownload.patch
-
-# Windows (with Git):
-git apply ForceDownload.patch
-```
-
-After applying, `Invoke-CMDownloadBIOSPackage.ps1` becomes v3.0.5 and will stage the BIOS package even when the installed version is already current. This is required so the subsequent forced flash can recreate the NVMe recovery image.
+The single TS variable enables both the forced download and the forced flash.
 
 ### Notes
 
