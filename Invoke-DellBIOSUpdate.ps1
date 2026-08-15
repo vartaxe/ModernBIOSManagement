@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Invoke Dell BIOS Update process.
 
@@ -14,15 +14,26 @@
 .PARAMETER LogFileName
     Set the name of the log file produced by the flash utility.
 
+.PARAMETER Force
+    Force the BIOS flash utility to run even if the installed BIOS version matches the package version.
+    This is required on newer Dell Pro / Dell S / Precision models that store the BIOS recovery image
+    on the NVMe drive. After an OSD reimage the recovery image is wiped and must be recreated by
+    re-running the BIOS executable (Dell KB 000467636). When Force is specified the /f switch is
+    added to Flash64W.exe (and the 32-bit fallback path). Default behaviour remains without /f for safety.
+
 .EXAMPLE
     .\Invoke-DellBIOSUpdate.ps1 -Password "BIOSPassword" -LogFileName "LogFileName.log"
+
+.EXAMPLE
+    .\Invoke-DellBIOSUpdate.ps1 -Force -Password "BIOSPassword"
+    Force recreation of the Dell BIOS recovery image after OSD on affected models.
 
 .NOTES
     FileName:    Invoke-DellBIOSUpdate.ps1
     Authors:     Maurice Daly & Nickolaj Andersen
     Contact:     @modaly_it
     Created:     2017-05-30
-    Updated:     2019-05-14
+    Updated:     2026-08-15
     
     Version history:
     1.0.0 - (2017-05-30) Script created (Maurice Daly)
@@ -37,6 +48,7 @@
 	1.0.8 - (2019-03-02) Updated path and task sequence handling
 	1.0.9 - (2019-05-01) Removed the /f switch that bypasses the model check and could possibly incorrectly flash the system with a wrong BIOS package if Dell somehow messes up with the downloaded bits
 	1.1.0 - (2019-05-14) Handle log output correctly if $Password is not specified
+	1.2.0 - (2026-08-15) Added optional -Force parameter to re-enable /f switch. Required to recreate the NVMe/EFI BIOS recovery image on newer Dell Pro, Dell S and Precision models after OSD reimaging (see Dell KB 000467636 and r/SCCM discussion). Also respects TS variable SMSTSForceDellBIOSFlash = True.
 #>
 [CmdletBinding(SupportsShouldProcess=$true)]
 param(
@@ -50,7 +62,10 @@ param(
 
     [parameter(Mandatory=$false, HelpMessage="Set the name of the log file produced by the flash utility.")]
     [ValidateNotNullOrEmpty()]
-    [string]$LogFileName = "DellFlashBIOSUpdate.log"
+    [string]$LogFileName = "DellFlashBIOSUpdate.log",
+
+    [parameter(Mandatory=$false, HelpMessage="Force the BIOS flash to run (adds /f) even when version is current. Needed to recreate NVMe BIOS recovery image after OSD on new Dell Pro models.")]
+    [switch]$Force
 )
 Begin {
 	# Load Microsoft.SMS.TSEnvironment COM object
@@ -107,12 +122,23 @@ Process {
 		Write-CMLogEntry -Value "Using BIOS package location set in OSDBIOSPackage01 TS variable" -Severity 1
 		$Path = $TSEnvironment.Value("OSDBIOSPackage01")
 	}
+
+	# Honour TS variable for Force if the switch was not explicitly passed
+	if (-not $Force) {
+		if ($TSEnvironment -ne $null -and $TSEnvironment.Value("SMSTSForceDellBIOSFlash") -eq "True") {
+			$Force = $true
+			Write-CMLogEntry -Value "Force mode enabled via TS variable SMSTSForceDellBIOSFlash" -Severity 1
+		}
+	}
 	
 	# Run BIOS update process if BIOS package exists
 	if (-not([string]::IsNullOrEmpty($Path))){
 
 		# Write log file for script execution
 		Write-CMLogEntry -Value "Initiating script to determine flashing capabilities for Dell BIOS updates" -Severity 1
+		if ($Force) {
+			Write-CMLogEntry -Value "Force parameter is active - /f will be used so the recovery image can be recreated even if BIOS version is current" -Severity 1
+		}
 
 		# Flash BIOS upgrade utility file name
 		$FlashUtility = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "Flash64W.exe" } | Select-Object -ExpandProperty FullName
@@ -130,6 +156,11 @@ Process {
 				# Set required switches for silent upgrade of the bios and logging
 				$FlashSwitches = "/b=$($CurrentBIOSFile) /s /l=$($BIOSLogFile)"
 
+				# Add force switch when requested (recreates NVMe recovery image on affected Dell models)
+				if ($Force) {
+					$FlashSwitches = $FlashSwitches + " /f"
+				}
+
 				# Add password to the Flash64W.exe switches
 				if ($PSBoundParameters["Password"]) {
 					if (-not([System.String]::IsNullOrEmpty($Password))) {
@@ -143,7 +174,7 @@ Process {
 					try {
 						# Start flash update process
 						if (-not([System.String]::IsNullOrEmpty($Password))) {
-							Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches -replace $Password, "<password removed>")" -Severity 1
+							Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches -replace $Password, \"<password removed>\")" -Severity 1
 						}
 						else {
 							Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches)" -Severity 1
@@ -188,7 +219,7 @@ Process {
 						if (([Environment]::Is64BitOperatingSystem) -eq $true) {
 							Write-CMLogEntry -Value "Starting 64-bit flash BIOS update process" -Severity 1
 							if (-not([System.String]::IsNullOrEmpty($Password))) {
-								Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches -replace $Password, "<password removed>")" -Severity 1
+								Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches -replace $Password, \"<password removed>\")" -Severity 1
 							}
 							else {
 								Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches)" -Severity 1
@@ -200,6 +231,9 @@ Process {
 						else {
 							# Set required switches for silent upgrade of the BIOS
 							$FileSwitches = " /l=$($BIOSLogFile) /s"
+							if ($Force) {
+								$FileSwitches = $FileSwitches + " /f"
+							}
 
 							# Add password to switches
 							if ($PSBoundParameters["Password"]) {
@@ -210,10 +244,10 @@ Process {
 
 							Write-CMLogEntry -Value "Starting 32-bit flash BIOS update process" -Severity 1
 							if (-not([System.String]::IsNullOrEmpty($Password))) {
-								Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches -replace $Password, "<password removed>")" -Severity 1
+								Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FileSwitches -replace $Password, \"<password removed>\")" -Severity 1
 							}
 							else {
-								Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches)" -Severity 1
+								Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FileSwitches)" -Severity 1
 							}
 
 							# Update BIOS using update file
