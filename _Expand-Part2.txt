@@ -1,0 +1,6 @@
+21864 /home/workdir/artifacts/_Expand-DownloadScript.ps1
+$gs = New-Object System.IO.Compression.GzipStream($ms, [IO.Compression.CompressionMode]::Decompress)
+$fs = [IO.File]::Create($out)
+$gs.CopyTo($fs)
+$fs.Close(); $gs.Close(); $ms.Close()
+Write-Host "Wrote $out ($((Get-Item $out).Length) bytes)"

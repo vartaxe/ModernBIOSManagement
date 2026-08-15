@@ -1,0 +1,30 @@
+<#
+.SYNOPSIS
+    One-time expander: writes the full Invoke-CMDownloadBIOSPackage.ps1 (v3.0.5 with -ForceDownload).
+.DESCRIPTION
+    Embeds a gzip+base64 of the complete script. Run once from the repo root:
+      powershell -File .\_Expand-DownloadScript.ps1
+    Then delete this helper. The expanded file is the PR deliverable.
+#>
+$ErrorActionPreference = "Stop"
+$b64 = @"
+H4sIAEOqf2oC/+19a3vbNrLwZ+tX8Cjex1IrKXbS7MXd9FS+JPG7VuxYdrJtmu2hJUhmTZFakrLj
+7ea/v3MBQIAXiZLltN1tztnaJglgMDMYzA2Dvz6qdfrfvT457R/1axsH4W3gh+7Q2Ts66TtTd3Dt
+joXTiMR45ruRetB0Jm4yuPKCsTMIJ9NZIiJnEg6F77jBEN4Fs5E7SGaRiDq1jVrn4LC/f3Z0en50
+8rrmwL/zKy924kHkTRPn1vN9Zyigh4kXCCe5ErKncER/6P6zPdMD+CJw/jkT0R19HE/FwBt5YuiI
+YDgNvSCh8UZh5OyHwcgb98aR805c9kV04w0EvXAd34sTHO6UJxd3nKOEe45FElPHJ/0DhRn1U33t
+3LiR5176AHvoeMHAnw0FjYrt5EdHB840CqciSu5wIFcjVqPRmiohAKAYOZOZn3hT6HuqRnMjQega
+JC3Hk+iLhQ9/1zYmIUxkMIsiEcCEAJuXjJZBJNzECwNn6CZCIVb12KnVOqfds27v8PzwzNmD/nsi
+cf3aRl8kjFQmFMwOZ4A9eIGzpT/cchrvvOD0sAlgTf3wboKDJ3dTpmOmd2CqiylCsbB7/SX0P5rB
+JE/6VUY4EJezcQ8eLxpAf7hVoddDxU0bfeIwRis8EFHg+g7Cdwds6PrMfMNw4sIYgTvR2I6B44Cy
+V0AhRe7uEDhecmLLEZ1xx9nvbe90uHXHDweub4NxAb28hk5tMGLJzO5gEM5gDjN4wGPDb0Pm8Rmy
+c+INXBrdHcMAcZKDQq8ae9hTN45vw2g4f9ip/Oo+o26Yw77wfMAviCQxQsngOiN6wP3f4vIEBPnY
+c+HaRnoHQJZIgLgInPDyJ1gjsb3iuEd7tifEJLBaXJ/5SI6P34fpO+ISIJsHzyPnNAqHswGtMZj4
+qeeHsDwRB+uBkxc4TDsLgA16zxCPtY0TYLjIGzLkQAtgK6QFsioLEOgvFTmmZCWgo1kQ4PjAyENc
+KwXj7cvWiCd/2QFJyFcdqX8XJ2LS/9tFtVH055UHOOm/FVEMiH0BPV2CaKxtwGqDMXCnuvWAFkio
+wZUYXBNdh5EHcMSpXE6u3ISJBn8IN/I9mOQN9xmjFAAhOQxv6cMAwHKTrdjYr9wYoAPMUOfnbjQW
+iQYJIT38e7d3enxY23gEIg5nSdvfUO3WPog1WFrujev5tBdZ2zfAf2UwX3IVhbPxFSMQF6Jey/Cr
+61yCZJ+gZDcFY2MoRi5sRs3d2kbnh6PgJrwW7f2e2gxxOLnXdabxjtPW24PTVsLTqZviDRih7tQ+
+x3zk7mHMpuoc9B40bxLGHFo0iUhMwwj3X1ZmiCWkPhXBOnZjnkAIxFbzReZ8jNBKWKvBNwexbbVV
+OHX8DXcDeKgEuVNXv8FDY8d8gJm0mFjc/lrAO174j534epby/+ecsCklnfqrU3iEgiyZSUHm1L/f
+C8Nrp5/Mhl7ofHz6x23n5TP4KpUq9T9/9eRPFu5qndcn54d9Uvxg4xIIyi7+sWhWtY0ubJNhRB87
