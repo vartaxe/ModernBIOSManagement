@@ -4,45 +4,45 @@ For original implementation instructions see: https://www.msendpointmgr.com/mode
 
 ## Dell NVMe recovery image recreation (this fork)
 
-Newer Dell Pro / Dell S / Precision models store the BIOS recovery image on NVMe.
-After a clean OSD the image is wiped. Re-running the BIOS flash (even on the same version)
-recreates it (Dell KB 000467636).
+Newer Dell Pro / Dell S / Precision models store the BIOS recovery image on NVMe.  
+After a clean OSD the image is wiped. Re-running the BIOS flash (even on the same version) recreates it  
+(Dell KB 000467636 / r/SCCM discussion).
 
-### What changed
+### What this fork provides
 
-| Script | Change |
-|--------|--------|
-| `Invoke-DellBIOSUpdate.ps1` | v1.2.0 – optional `-Force` (adds `/f`). Also respects TS var `SMSTSForceDellBIOSFlash=True` |
-| `Invoke-CMDownloadBIOSPackage.ps1` | Apply `ForceDownload.patch` to get v3.0.5 – optional `-ForceDownload` so the package is staged even when version is current |
+| Script | Version | Status |
+|--------|---------|--------|
+| `Invoke-DellBIOSUpdate.ps1` | **v1.2.0** | Ready. Optional `-Force` (adds `/f`). Also auto-enabled by TS variable `SMSTSForceDellBIOSFlash=True` |
+| `Invoke-CMDownloadBIOSPackage.ps1` | base v3.0.4 + `ForceDownload.patch` | Apply the included patch to get **v3.0.5** with `-ForceDownload` support |
 
-### Task Sequence usage
+### Task Sequence usage (recommended)
 
 ```
 Set Task Sequence Variable
   Name:  SMSTSForceDellBIOSFlash
   Value: True
 
-# then normal steps
+# then the normal steps
 Invoke-CMDownloadBIOSPackage.ps1 ...
-Invoke-DellBIOSUpdate.ps1          # -Force optional when TS var is set
+Invoke-DellBIOSUpdate.ps1
 ```
 
-### Enabling -ForceDownload on the download script
+The single TS variable enables both the forced download (after patch) and the forced flash.
 
-The included `Invoke-CMDownloadBIOSPackage.ps1` is the base (v3.0.4).
-Apply the small patch to add `-ForceDownload` + TS variable support:
+### Applying the ForceDownload patch (one-time)
 
 ```powershell
-# From the repo root (or copy the .ps1 + .patch somewhere)
-# On Linux / Git Bash:
+# From the repo root
+# Linux / Git Bash:
 patch -p0 < ForceDownload.patch
 
-# Or on Windows PowerShell (requires git):
+# Windows (with Git):
 git apply ForceDownload.patch
 ```
 
-After applying, the script becomes v3.0.5 with:
-- `-ForceDownload` switch
-- Auto-enable when TS var `SMSTSForceDellBIOSFlash` or `SMSTSForceBIOSDownload` is `True`
+After applying, `Invoke-CMDownloadBIOSPackage.ps1` becomes v3.0.5 and will stage the BIOS package even when the installed version is already current. This is required so the subsequent forced flash can recreate the NVMe recovery image.
 
-This stages the BIOS package even when the installed version is already current, so the subsequent `Invoke-DellBIOSUpdate.ps1 -Force` (or the same TS var) can recreate the NVMe recovery image.
+### Notes
+
+- Only the `main` branch is used. Any other branches can be safely deleted.
+- No other scripts were modified.
