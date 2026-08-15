@@ -62,7 +62,7 @@
 	Author:      Nickolaj Andersen / Maurice Daly
     Contact:     @NickolajA / @MoDaly_IT
     Created:     2020-10-30
-    Updated:     2026-08-05
+    Updated:     2026-08-15
     
     Version history:
     3.0.0 - (2020-10-30) - Script created
@@ -79,6 +79,9 @@
 						 - Corrected $null comparisons to place $null on the left-hand side.
 						 - Added a documented placeholder (default) branch in Get-ComputerData describing how to add support for custom/unlisted manufacturers.
 						 - Logging improvements for troubleshooting: Invoke-Executable launch failures are now written to the log file (Severity 3) instead of only Write-Warning, and return -1 rather than silently continuing; Get-ComputerData wraps manufacturer detection in try/catch that logs the manufacturer context on failure and degrades gracefully; and a script version + key parameter banner is written at startup.
+	3.0.5 - (2026-08-15) - Added optional -ForceDownload switch (and TS variable SMSTSForceDellBIOSFlash / SMSTSForceBIOSDownload).
+						   When set, the matched BIOS package is downloaded even if the installed version is already current.
+						   Required so Invoke-DellBIOSUpdate.ps1 -Force can recreate the NVMe BIOS recovery image on newer Dell Pro/S/Precision models after OSD (Dell KB 000467636).
 
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
@@ -129,7 +132,11 @@ param (
 	
 	[parameter(Mandatory = $false, ParameterSetName = "Debug", HelpMessage = "Override the automatically detected SystemSKU when running in debug mode.")]
 	[ValidateNotNullOrEmpty()]
-	[string]$SystemSKU
+	[string]$SystemSKU,
+
+	[parameter(Mandatory = $false, ParameterSetName = "BareMetal", HelpMessage = "Force download of the matched BIOS package even when the installed version is already current. Needed to stage content for Dell recovery-image recreation after OSD.")]
+	[parameter(Mandatory = $false, ParameterSetName = "BIOSUpdate", HelpMessage = "Force download of the matched BIOS package even when the installed version is already current. Needed to stage content for Dell recovery-image recreation after OSD.")]
+	[switch]$ForceDownload
 )
 Begin {
 	
@@ -1215,6 +1222,12 @@ Process {
 							}
 							
 							if ($Script:PSCmdlet.ParameterSetName -notlike "Debug") {
+								# ForceDownload stages the package even when version comparison did not set NewBIOSAvailable
+								# (required so a subsequent Invoke-DellBIOSUpdate -Force can recreate the NVMe recovery image).
+								if ($ForceDownload -and $TSEnvironment.Value("NewBIOSAvailable") -ne $true) {
+									Write-CMLogEntry -Value "ForceDownload active - downloading BIOS package even though installed version is current (recovery image recreation)" -Severity 1
+									$TSEnvironment.Value("NewBIOSAvailable") = $true
+								}
 								if ($TSEnvironment.Value("NewBIOSAvailable") -eq $true) {
 									# Attempt to download BIOS package content
 									$DownloadInvocation = Invoke-CMDownloadContent -PackageID $($PackageList[0].PackageID) -DestinationLocationType Custom -DestinationVariableName "OSDBIOSPackage" -CustomLocationPath "%_SMSTSMDataPath%\BIOSPackage"
@@ -1283,6 +1296,10 @@ Process {
 								}
 								
 								if ($Script:PSCmdlet.ParameterSetName -notlike "Debug") {
+									if ($ForceDownload -and $TSEnvironment.Value("NewBIOSAvailable") -ne $true) {
+										Write-CMLogEntry -Value "ForceDownload active - downloading BIOS package even though installed version is current (recovery image recreation)" -Severity 1
+										$TSEnvironment.Value("NewBIOSAvailable") = $true
+									}
 									if ($TSEnvironment.Value("NewBIOSAvailable") -eq $true) {
 										$DownloadInvocation = Invoke-CMDownloadContent -PackageID $($PackageList[0].PackageID) -DestinationLocationType Custom -DestinationVariableName "OSDBIOSPackage" -CustomLocationPath "%_SMSTSMDataPath%\BIOSPackage"
 										
@@ -1319,7 +1336,21 @@ Process {
 	}
 	
 	Write-CMLogEntry -Value "[ApplyBIOSPackage]: Apply BIOS Package process initiated" -Severity 1
-	Write-CMLogEntry -Value " - Script version: 3.0.4" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 3.0.5" -Severity 1
+
+	# Resolve ForceDownload from TS variables when the switch was not explicitly passed.
+	# SMSTSForceDellBIOSFlash is shared with Invoke-DellBIOSUpdate.ps1 -Force; SMSTSForceBIOSDownload is a more general alias.
+	if (-not $ForceDownload) {
+		if ($PSCmdLet.ParameterSetName -notlike "Debug" -and $null -ne $TSEnvironment) {
+			if ($TSEnvironment.Value("SMSTSForceDellBIOSFlash") -eq "True" -or $TSEnvironment.Value("SMSTSForceBIOSDownload") -eq "True") {
+				$ForceDownload = $true
+				Write-CMLogEntry -Value " - ForceDownload enabled via task sequence variable (SMSTSForceDellBIOSFlash or SMSTSForceBIOSDownload)" -Severity 1
+			}
+		}
+	}
+	if ($ForceDownload) {
+		Write-CMLogEntry -Value " - ForceDownload is active: matched BIOS package will be downloaded even if version is current (for recovery image recreation)" -Severity 1
+	}
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply BIOS package process initiated in debug mode" -Severity 1
 	}
