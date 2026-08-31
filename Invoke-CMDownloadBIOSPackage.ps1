@@ -41,6 +41,9 @@
 .PARAMETER SystemSKU
 	Override the automatically detected SystemSKU when running in debug mode.
 
+.PARAMETER ForceDownload
+	Force the matching BIOS package to be downloaded (and flagged for flashing) even when the installed BIOS version already matches the package version. This is an opt-in switch used for intentional re-application scenarios -- for example recreating Dell BIOS recovery images on newer Pro/Precision platforms after OS deployment, SSD replacement or disk wipes. The equivalent task sequence variable is SMSTSForceBIOSDownload=True. Default behaviour (skip when already up to date) is unchanged.
+
 .PARAMETER OSVersionFallback
 	Use this switch to check for drivers packages that matches earlier versions of Windows than what's specified as input for TargetOSVersion.
 
@@ -81,6 +84,8 @@
 						 - Logging improvements for troubleshooting: Invoke-Executable launch failures are now written to the log file (Severity 3) instead of only Write-Warning, and return -1 rather than silently continuing; Get-ComputerData wraps manufacturer detection in try/catch that logs the manufacturer context on failure and degrades gracefully; and a script version + key parameter banner is written at startup.
 	3.0.5 - (2026-08-21) - Fixed BIOS package detection failing in a live task sequence while succeeding in DebugMode (#902):
 					 - Get-BIOSUpdate matched packages against the script-level $ComputerModel parameter, which is only populated in DebugMode. In a real (BareMetal/BIOSUpdate) run it was empty, so the ComputerModel detection method and the SystemSKU-to-model fallback compared against a blank string and never matched -- most visible on Lenovo, where the SystemSKU is only the 4-char machine type and the model-name fallback is often required. Now uses $ComputerSystemType (the detected/overridden $InputObject.Model) so matching behaves identically in both modes.
+	3.0.6 - (2026-08-31) - Added optional force-download support for intentional BIOS re-application (MSEndpointMgr/ModernBIOSManagement#31):
+					 - New -ForceDownload switch (and SMSTSForceBIOSDownload=True task sequence variable) downloads the matching BIOS package and flags it for flashing (NewBIOSAvailable=true) even when the installed version already matches the package version. Enables recreating Dell BIOS recovery images (stored on internal NVMe) after OSD, SSD replacement or disk wipes. Opt-in only; default behaviour (skip when already up to date) is unchanged. Note: forcing the flash of the same version on Dell also requires the companion Dell BIOS update step to pass Dell's /f switch.
 
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
@@ -131,7 +136,12 @@ param (
 	
 	[parameter(Mandatory = $false, ParameterSetName = "Debug", HelpMessage = "Override the automatically detected SystemSKU when running in debug mode.")]
 	[ValidateNotNullOrEmpty()]
-	[string]$SystemSKU
+	[string]$SystemSKU,
+
+	[parameter(Mandatory = $false, ParameterSetName = "BareMetal", HelpMessage = "Force the BIOS package to download and flag for flashing even when the installed version already matches (opt-in; for intentional re-application such as Dell recovery image recreation).")]
+	[parameter(Mandatory = $false, ParameterSetName = "BIOSUpdate")]
+	[parameter(Mandatory = $false, ParameterSetName = "Debug")]
+	[switch]$ForceDownload
 )
 Begin {
 	
@@ -1217,6 +1227,11 @@ Process {
 							}
 							
 							if ($Script:PSCmdlet.ParameterSetName -notlike "Debug") {
+								# Force download re-applies the matching package even when the version already matches
+								if (($TSEnvironment.Value("NewBIOSAvailable") -ne $true) -and ($Script:ForceBIOSDownload -eq $true)) {
+									Write-CMLogEntry -Value "Force BIOS download enabled -- installed version already matches $($PackageList[0].Version); downloading and flagging the package for re-application (e.g. Dell recovery image recreation)" -Severity 2
+									$TSEnvironment.Value("NewBIOSAvailable") = $true
+								}
 								if ($TSEnvironment.Value("NewBIOSAvailable") -eq $true) {
 									# Attempt to download BIOS package content
 									$DownloadInvocation = Invoke-CMDownloadContent -PackageID $($PackageList[0].PackageID) -DestinationLocationType Custom -DestinationVariableName "OSDBIOSPackage" -CustomLocationPath "%_SMSTSMDataPath%\BIOSPackage"
@@ -1235,9 +1250,13 @@ Process {
 									Write-CMLogEntry -Value "BIOS is already up to date with the latest $($PackageList[0].PackageVersion) version" -Severity 1
 								}
 							} else {
-								Write-CMLogEntry -Value "Task sequence engine would have been instructed to download package ID $($PackageList[0].PackageID) to %_SMSTSMDataPath%\BIOSPackage" -Severity 1
+								if ($Script:ForceBIOSDownload -eq $true) {
+									Write-CMLogEntry -Value "Task sequence engine would have been instructed to download package ID $($PackageList[0].PackageID) to %_SMSTSMDataPath%\BIOSPackage (Force BIOS download enabled)" -Severity 1
+								} else {
+									Write-CMLogEntry -Value "Task sequence engine would have been instructed to download package ID $($PackageList[0].PackageID) to %_SMSTSMDataPath%\BIOSPackage" -Severity 1
+								}
 							}
-							
+
 						} elseif ($PackageList.Count -ge 2) {
 							Write-CMLogEntry -Value "BIOS package list contains multiple matches, attempting to set task sequence variable" -Severity 1
 							
@@ -1285,9 +1304,14 @@ Process {
 								}
 								
 								if ($Script:PSCmdlet.ParameterSetName -notlike "Debug") {
+									# Force download re-applies the matching package even when the version already matches
+									if (($TSEnvironment.Value("NewBIOSAvailable") -ne $true) -and ($Script:ForceBIOSDownload -eq $true)) {
+										Write-CMLogEntry -Value "Force BIOS download enabled -- installed version already matches $($PackageList[0].Version); downloading and flagging the package for re-application (e.g. Dell recovery image recreation)" -Severity 2
+										$TSEnvironment.Value("NewBIOSAvailable") = $true
+									}
 									if ($TSEnvironment.Value("NewBIOSAvailable") -eq $true) {
 										$DownloadInvocation = Invoke-CMDownloadContent -PackageID $($PackageList[0].PackageID) -DestinationLocationType Custom -DestinationVariableName "OSDBIOSPackage" -CustomLocationPath "%_SMSTSMDataPath%\BIOSPackage"
-										
+
 										try {
 											# Check for successful package download
 											if ($DownloadInvocation -eq 0) {
@@ -1302,7 +1326,11 @@ Process {
 										Write-CMLogEntry -Value "BIOS is already up to date with the latest $($PackageList[0].Version) version" -Severity 1
 									}
 								} else {
-									Write-CMLogEntry -Value "Task sequence engine would have been instructed to download package ID $($PackageList[0].PackageID) to %_SMSTSMDataPath%\BIOSPackage" -Severity 1
+									if ($Script:ForceBIOSDownload -eq $true) {
+										Write-CMLogEntry -Value "Task sequence engine would have been instructed to download package ID $($PackageList[0].PackageID) to %_SMSTSMDataPath%\BIOSPackage (Force BIOS download enabled)" -Severity 1
+									} else {
+										Write-CMLogEntry -Value "Task sequence engine would have been instructed to download package ID $($PackageList[0].PackageID) to %_SMSTSMDataPath%\BIOSPackage" -Severity 1
+									}
 								}
 							} else {
 								Write-CMLogEntry -Value "Unable to determine a matching BIOS package from list since an unsupported count was returned from package list, bailing out" -Severity 2; exit 1
@@ -1321,13 +1349,32 @@ Process {
 	}
 	
 	Write-CMLogEntry -Value "[ApplyBIOSPackage]: Apply BIOS Package process initiated" -Severity 1
-	Write-CMLogEntry -Value " - Script version: 3.0.5" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 3.0.6" -Severity 1
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply BIOS package process initiated in debug mode" -Severity 1
 	}
 	Write-CMLogEntry -Value " - Apply BIOS package deployment type: $($PSCmdLet.ParameterSetName)" -Severity 1
 	Write-CMLogEntry -Value " - Apply BIOS package operational mode: $($OperationalMode)" -Severity 1
 	Write-CMLogEntry -Value " - Endpoint: '$($Endpoint)' | Filter: '$($Filter)'" -Severity 1
+
+	# Determine effective BIOS force-download mode. When enabled, the matching BIOS package is
+	# downloaded and flagged for flashing (NewBIOSAvailable=true) even if the installed version
+	# already matches -- used to recreate Dell BIOS recovery images after OSD/SSD replacement
+	# (MSEndpointMgr/ModernBIOSManagement#31). Opt-in only: the -ForceDownload switch, or the
+	# SMSTSForceBIOSDownload task sequence variable ('True'/'1'/'Yes').
+	$Script:ForceBIOSDownload = $false
+	if ($ForceDownload.IsPresent) { $Script:ForceBIOSDownload = $true }
+	if ($PSCmdLet.ParameterSetName -notlike "Debug") {
+		$ForceTSValue = $TSEnvironment.Value("SMSTSForceBIOSDownload")
+		if (-not [string]::IsNullOrEmpty($ForceTSValue) -and $ForceTSValue -match '^(?i:true|1|yes)$') {
+			$Script:ForceBIOSDownload = $true
+		}
+	}
+	if ($Script:ForceBIOSDownload -eq $true) {
+		Write-CMLogEntry -Value " - Force BIOS download: ENABLED -- BIOS package will be downloaded even if the installed version matches" -Severity 2
+	} else {
+		Write-CMLogEntry -Value " - Force BIOS download: disabled (default)" -Severity 1
+	}
 	
 	# Set script error preference variable
 	$ErrorActionPreference = "Stop"
