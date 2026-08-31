@@ -174,7 +174,7 @@ Process {
 					try {
 						# Start flash update process
 						if (-not([System.String]::IsNullOrEmpty($Password))) {
-							Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches -replace $Password, \"<password removed>\")" -Severity 1
+							Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches -replace $Password, "<password removed>")" -Severity 1
 						}
 						else {
 							Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches)" -Severity 1
@@ -219,7 +219,7 @@ Process {
 						if (([Environment]::Is64BitOperatingSystem) -eq $true) {
 							Write-CMLogEntry -Value "Starting 64-bit flash BIOS update process" -Severity 1
 							if (-not([System.String]::IsNullOrEmpty($Password))) {
-								Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches -replace $Password, \"<password removed>\")" -Severity 1
+								Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches -replace $Password, "<password removed>")" -Severity 1
 							}
 							else {
 								Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches)" -Severity 1
@@ -244,7 +244,7 @@ Process {
 
 							Write-CMLogEntry -Value "Starting 32-bit flash BIOS update process" -Severity 1
 							if (-not([System.String]::IsNullOrEmpty($Password))) {
-								Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FileSwitches -replace $Password, \"<password removed>\")" -Severity 1
+								Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FileSwitches -replace $Password, "<password removed>")" -Severity 1
 							}
 							else {
 								Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FileSwitches)" -Severity 1
