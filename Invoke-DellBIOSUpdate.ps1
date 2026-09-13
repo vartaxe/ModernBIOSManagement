@@ -11,6 +11,9 @@
 .PARAMETER Password
     Specify the BIOS password if necessary.
 
+.PARAMETER NoVideo
+    Add Dell's /novideo switch for supported headless systems that cannot flash the BIOS without a connected display. Disabled by default.
+
 .PARAMETER LogFileName
     Set the name of the log file produced by the flash utility.
 
@@ -37,6 +40,7 @@
 	1.0.8 - (2019-03-02) Updated path and task sequence handling
 	1.0.9 - (2019-05-01) Removed the /f switch that bypasses the model check and could possibly incorrectly flash the system with a wrong BIOS package if Dell somehow messes up with the downloaded bits
 	1.1.0 - (2019-05-14) Handle log output correctly if $Password is not specified
+	1.1.1 - (2026-09-13) Added opt-in /novideo support for compatible headless systems
 #>
 [CmdletBinding(SupportsShouldProcess=$true)]
 param(
@@ -47,6 +51,9 @@ param(
     [parameter(Mandatory=$false, HelpMessage="Specify the BIOS password if necessary.")]
     [ValidateNotNullOrEmpty()]
     [string]$Password,
+
+    [parameter(Mandatory=$false, HelpMessage="Add Dell's /novideo switch for supported headless systems.")]
+    [switch]$NoVideo,
 
     [parameter(Mandatory=$false, HelpMessage="Set the name of the log file produced by the flash utility.")]
     [ValidateNotNullOrEmpty()]
@@ -137,6 +144,10 @@ Process {
 					}
 				}	
 
+				if ($NoVideo.IsPresent) {
+					$FlashSwitches = $FlashSwitches + " /novideo"
+				}
+
 				if (($TSEnvironment -ne $null) -and ($TSEnvironment.Value("_SMSTSinWinPE") -eq $true)) {
 					Write-CMLogEntry -Value "Current environment is determined as WinPE" -Severity 1
 
@@ -206,6 +217,10 @@ Process {
 								if (-not([System.String]::IsNullOrEmpty($Password))) {
 									$FileSwitches = $FileSwitches + " /p=$($Password)"
 								}
+							}
+
+							if ($NoVideo.IsPresent) {
+								$FileSwitches = $FileSwitches + " /novideo"
 							}
 
 							Write-CMLogEntry -Value "Starting 32-bit flash BIOS update process" -Severity 1
