@@ -50,9 +50,6 @@
 .PARAMETER ForceDownload
 	Force the matching BIOS package to be downloaded (and flagged for flashing) even when the installed BIOS version already matches the package version. This is an opt-in switch used for intentional re-application scenarios -- for example recreating Dell BIOS recovery images on newer Pro/Precision platforms after OS deployment, SSD replacement or disk wipes. The equivalent task sequence variable is SMSTSForceBIOSDownload=True. Default behaviour (skip when already up to date) is unchanged.
 
-.PARAMETER OSVersionFallback
-	Use this switch to check for drivers packages that matches earlier versions of Windows than what's specified as input for TargetOSVersion.
-
 .EXAMPLE
 	# Detect and download latest available BIOS package with ConfigMgr through the admin service in a baremetal deployment (default):
 	.\Invoke-CMDownloadBIOSPackage.ps1 -BareMetal -Endpoint "CM01.domain.com" 
@@ -108,7 +105,7 @@
 					 - The self-signed certificate callback was moved into Set-CertificateValidationCallback and is now only registered once per run. Previously Add-Type ran on every certificate failure, so a second AdminService call hitting the same condition failed with a duplicate type error.
 
 #>
-[CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
+[CmdletBinding(DefaultParameterSetName = "BareMetal")]
 param (
 	[parameter(Mandatory = $true, ParameterSetName = "BareMetal", HelpMessage = "Set the script to operate in 'BareMetal' deployment type mode.")]
 	[switch]$BareMetal,
@@ -385,22 +382,31 @@ Process {
 	
 	function New-TerminatingErrorRecord {
 		param (
-			[parameter(Mandatory = $true, HelpMessage = "Specify the exception message details.")]
-			[ValidateNotNullOrEmpty()]
-			[string]$Message,
+			[parameter(Mandatory = $false, HelpMessage = "Specify the exception message details.")]
+			[AllowEmptyString()]
+			[string]$Message = ([string]::Empty),
 			
 			[parameter(Mandatory = $false, HelpMessage = "Specify the violation exception causing the error.")]
 			[ValidateNotNullOrEmpty()]
 			[string]$Exception = "System.Management.Automation.RuntimeException",
+			
+			[parameter(Mandatory = $false, HelpMessage = "Specify the unique identifier for the error record.")]
+			[ValidateNotNullOrEmpty()]
+			[string]$ErrorID = "ModernBIOSManagementError",
 			
 			[parameter(Mandatory = $false, HelpMessage = "Specify the error category of the exception causing the error.")]
 			[ValidateNotNullOrEmpty()]
 			[System.Management.Automation.ErrorCategory]$ErrorCategory = [System.Management.Automation.ErrorCategory]::NotImplemented,
 			
 			[parameter(Mandatory = $false, HelpMessage = "Specify the target object causing the error.")]
-			[ValidateNotNullOrEmpty()]
+			[AllowEmptyString()]
 			[string]$TargetObject = ([string]::Empty)
 		)
+		# Fall back to a generic message when no details were supplied, since an empty exception message hides the failure reason
+		if ([string]::IsNullOrEmpty($Message)) {
+			$Message = "An unrecoverable error occurred, review the log file for the preceding error entry for further details"
+		}
+		
 		# Construct new error record to be returned from function based on parameter inputs
 		$SystemException = New-Object -TypeName $Exception -ArgumentList $Message
 		$ErrorRecord = New-Object -TypeName System.Management.Automation.ErrorRecord -ArgumentList @($SystemException, $ErrorID, $ErrorCategory, $TargetObject)
@@ -628,7 +634,7 @@ Process {
 				Write-CMLogEntry -Value " - Attempting to determine AdminService endpoint type based on current active Management Point candidates and from ClientInfo class" -Severity 1
 				
 				# Determine active MP candidates and if 
-				$ActiveMPCandidates = Get-WmiObject -Namespace "root\ccm\LocationServices" -Class "SMS_ActiveMPCandidate"
+				$ActiveMPCandidates = Get-CimInstance -Namespace "root\ccm\LocationServices" -ClassName "SMS_ActiveMPCandidate"
 				$ActiveMPInternalCandidatesCount = ($ActiveMPCandidates | Where-Object {
 						$PSItem.Type -like "Assigned"
 					} | Measure-Object).Count
@@ -637,7 +643,7 @@ Process {
 					} | Measure-Object).Count
 				
 				# Determine if ConfigMgr client has detected if the computer is currently on internet or intranet
-				$CMClientInfo = Get-WmiObject -Namespace "root\ccm" -Class "ClientInfo"
+				$CMClientInfo = Get-CimInstance -Namespace "root\ccm" -ClassName "ClientInfo"
 				switch ($CMClientInfo.InInternet) {
 					$true {
 						if ($ActiveMPExternalCandidatesCount -ge 1) {
@@ -762,7 +768,7 @@ Process {
 		# 2. Domain membership of the running device -- available in full OS deployment types, but not
 		#    in WinPE where the computer is always reported as a workgroup member
 		try {
-			$ComputerSystem = Get-WmiObject -Class Win32_ComputerSystem -ErrorAction Stop
+			$ComputerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
 			if (($ComputerSystem.PartOfDomain -eq $true) -and ($ComputerSystem.Domain -match "\.")) {
 				return $ComputerSystem.Domain
 			}
@@ -1056,7 +1062,7 @@ Process {
 			}
 		}
 
-		# Add returned driver package objects to array list
+		# Add returned BIOS package objects to array list
 		if ($null -ne $AdminServiceResponse.value) {
 			foreach ($Package in $AdminServiceResponse.value) {
 				$PackageArray.Add($Package) | Out-Null
@@ -1130,7 +1136,7 @@ Process {
 		}
 		
 		# Gather computer details based upon specific computer manufacturer
-		$ComputerManufacturer = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Manufacturer).Trim()
+		$ComputerManufacturer = (Get-CimInstance -ClassName "Win32_ComputerSystem" | Select-Object -ExpandProperty Manufacturer).Trim()
 		
 		# Wrapped in try/catch so a failure in any manufacturer-specific WMI/parse step (e.g. a null
 		# BaseBoardProduct, a short Lenovo Model for SubString, or a Dell OEMString without a bracketed
@@ -1140,50 +1146,50 @@ Process {
 		switch -Wildcard ($ComputerManufacturer) {
 			"*Microsoft*" {
 				$ComputerDetails.Manufacturer = "Microsoft"
-				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
-				$ComputerDetails.SystemSKU = Get-WmiObject -Namespace "root\wmi" -Class "MS_SystemInformation" | Select-Object -ExpandProperty SystemSKU
+				$ComputerDetails.Model = (Get-CimInstance -ClassName "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+				$ComputerDetails.SystemSKU = Get-CimInstance -Namespace "root\wmi" -ClassName "MS_SystemInformation" | Select-Object -ExpandProperty SystemSKU
 			}
 			"*HP*" {
 				$ComputerDetails.Manufacturer = "HP"
-				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+				$ComputerDetails.Model = (Get-CimInstance -ClassName "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
 				$ComputerDetails.SystemSKU = (Get-CIMInstance -ClassName "MS_SystemInformation" -NameSpace "root\WMI").BaseBoardProduct.Trim()
 			}
 			"*Hewlett-Packard*" {
 				$ComputerDetails.Manufacturer = "HP"
-				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+				$ComputerDetails.Model = (Get-CimInstance -ClassName "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
 				$ComputerDetails.SystemSKU = (Get-CIMInstance -ClassName "MS_SystemInformation" -NameSpace "root\WMI").BaseBoardProduct.Trim()
 			}
 			"*Dell*" {
 				$ComputerDetails.Manufacturer = "Dell"
-				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+				$ComputerDetails.Model = (Get-CimInstance -ClassName "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
 				$ComputerDetails.SystemSKU = (Get-CIMInstance -ClassName "MS_SystemInformation" -NameSpace "root\WMI").SystemSku.Trim()
-				[string]$OEMString = Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty OEMStringArray
+				[string]$OEMString = Get-CimInstance -ClassName "Win32_ComputerSystem" | Select-Object -ExpandProperty OEMStringArray
 				$ComputerDetails.FallbackSKU = [regex]::Matches($OEMString, '\[\S*]')[0].Value.TrimStart("[").TrimEnd("]")
 			}
 			"*Lenovo*" {
 				$ComputerDetails.Manufacturer = "Lenovo"
-				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystemProduct" | Select-Object -ExpandProperty Version).Trim()
-				$ComputerDetails.SystemSKU = ((Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).SubString(0, 4)).Trim()
+				$ComputerDetails.Model = (Get-CimInstance -ClassName "Win32_ComputerSystemProduct" | Select-Object -ExpandProperty Version).Trim()
+				$ComputerDetails.SystemSKU = ((Get-CimInstance -ClassName "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).SubString(0, 4)).Trim()
 			}
 			"*Panasonic*" {
 				$ComputerDetails.Manufacturer = "Panasonic Corporation"
-				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+				$ComputerDetails.Model = (Get-CimInstance -ClassName "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
 				$ComputerDetails.SystemSKU = (Get-CIMInstance -ClassName "MS_SystemInformation" -NameSpace "root\WMI").BaseBoardProduct.Trim()
 			}
 			"*Viglen*" {
 				$ComputerDetails.Manufacturer = "Viglen"
-				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
-				$ComputerDetails.SystemSKU = (Get-WmiObject -Class "Win32_BaseBoard" | Select-Object -ExpandProperty SKU).Trim()
+				$ComputerDetails.Model = (Get-CimInstance -ClassName "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+				$ComputerDetails.SystemSKU = (Get-CimInstance -ClassName "Win32_BaseBoard" | Select-Object -ExpandProperty SKU).Trim()
 			}
 			"*AZW*" {
 				$ComputerDetails.Manufacturer = "AZW"
-				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+				$ComputerDetails.Model = (Get-CimInstance -ClassName "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
 				$ComputerDetails.SystemSKU = (Get-CIMInstance -ClassName "MS_SystemInformation" -NameSpace root\WMI).BaseBoardProduct.Trim()
 			}
 			"*Fujitsu*" {
 				$ComputerDetails.Manufacturer = "Fujitsu"
-				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
-				$ComputerDetails.SystemSKU = (Get-WmiObject -Class "Win32_BaseBoard" | Select-Object -ExpandProperty SKU).Trim()
+				$ComputerDetails.Model = (Get-CimInstance -ClassName "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+				$ComputerDetails.SystemSKU = (Get-CimInstance -ClassName "Win32_BaseBoard" | Select-Object -ExpandProperty SKU).Trim()
 			}
 			default {
 				# =============================================================================
@@ -1197,7 +1203,7 @@ Process {
 				#
 				# To add full support for a new manufacturer, copy the template below into its
 				# own "*<Manufacturer>*" branch above. The wildcard must match the value reported
-				# by:  (Get-WmiObject -Class Win32_ComputerSystem).Manufacturer
+				# by:  (Get-CimInstance -ClassName Win32_ComputerSystem).Manufacturer
 				# Populate the three key properties from the correct WMI/CIM source for that OEM.
 				# The SystemSKU source differs per vendor -- for example:
 				#   Dell     -> (Get-CIMInstance -ClassName MS_SystemInformation -Namespace root\WMI).SystemSku
@@ -1208,8 +1214,8 @@ Process {
 				# Template (add as a new branch above and adjust the values):
 				#   "*Acme*" {
 				#       $ComputerDetails.Manufacturer = "Acme"
-				#       $ComputerDetails.Model        = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
-				#       $ComputerDetails.SystemSKU    = (Get-WmiObject -Class "Win32_BaseBoard" | Select-Object -ExpandProperty SKU).Trim()
+				#       $ComputerDetails.Model        = (Get-CimInstance -ClassName "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+				#       $ComputerDetails.SystemSKU    = (Get-CimInstance -ClassName "Win32_BaseBoard" | Select-Object -ExpandProperty SKU).Trim()
 				#   }
 				#
 				# IMPORTANT: adding a branch here is not sufficient on its own. The new
@@ -1217,7 +1223,7 @@ Process {
 				# the Get-BIOSUpdate function, otherwise any matched packages are filtered out.
 				# =============================================================================
 				$ComputerDetails.Manufacturer = $ComputerManufacturer
-				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+				$ComputerDetails.Model = (Get-CimInstance -ClassName "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
 				# SystemSKU intentionally left unset -- add the correct source for this OEM using the template above.
 				Write-CMLogEntry -Value " - Manufacturer '$($ComputerManufacturer)' is not explicitly supported. Using best-effort model detection only. To add full support, see the CUSTOM / UNLISTED MANUFACTURER template in the Get-ComputerData function and add the manufacturer to the `$Manufacturers allow-list in Get-BIOSUpdate." -Severity 2
 			}
@@ -1228,7 +1234,7 @@ Process {
 			# Best-effort fallback so downstream computer-model matching can still proceed.
 			if ([string]::IsNullOrEmpty($ComputerDetails.Manufacturer)) { $ComputerDetails.Manufacturer = $ComputerManufacturer }
 			if ([string]::IsNullOrEmpty($ComputerDetails.Model)) {
-				try { $ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim() } catch { Write-CMLogEntry -Value " - Unable to determine computer model during fallback. Error message: $($_.Exception.Message)" -Severity 3 }
+				try { $ComputerDetails.Model = (Get-CimInstance -ClassName "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim() } catch { Write-CMLogEntry -Value " - Unable to determine computer model during fallback. Error message: $($_.Exception.Message)" -Severity 3 }
 			}
 		}
 		
@@ -1266,7 +1272,7 @@ Process {
 	}
 	
 	function Get-ComputerSystemType {
-		$ComputerSystemType = Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty "Model"
+		$ComputerSystemType = Get-CimInstance -ClassName "Win32_ComputerSystem" | Select-Object -ExpandProperty "Model"
 		if ($ComputerSystemType -notin @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM", "VMWare7,1")) {
 			Write-CMLogEntry -Value " - Supported computer platform detected, script execution allowed to continue" -Severity 1
 		} else {
@@ -1339,7 +1345,7 @@ Process {
 		
 		if ($ComputerManufacturer -match "Dell") {
 			# Obtain current BIOS release
-			$CurrentBIOSVersion = (Get-WmiObject -Class Win32_BIOS | Select-Object -ExpandProperty SMBIOSBIOSVersion).Trim()
+			$CurrentBIOSVersion = (Get-CimInstance -ClassName Win32_BIOS | Select-Object -ExpandProperty SMBIOSBIOSVersion).Trim()
 			Write-CMLogEntry -Value "Current BIOS release detected as $($CurrentBIOSVersion)." -Severity 1
 			Write-CMLogEntry -Value "Available BIOS release deteced as $($AvailableBIOSVersion)." -Severity 1
 			
@@ -1374,7 +1380,7 @@ Process {
 		
 		if ($ComputerManufacturer -match "Lenovo") {
 			# Obtain current BIOS release
-			$CurrentBIOSReleaseDate = ((Get-WmiObject -Class Win32_BIOS | Select-Object -Property *).ReleaseDate).SubString(0, 8)
+			$CurrentBIOSReleaseDate = (Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop).ReleaseDate.ToString("yyyyMMdd", [System.Globalization.CultureInfo]::InvariantCulture)
 			Write-CMLogEntry -Value "Current BIOS release date detected as $($CurrentBIOSReleaseDate)." -Severity 1
 			Write-CMLogEntry -Value "Available BIOS release date detected as $($AvailableBIOSReleaseDate)." -Severity 1
 			
@@ -1390,7 +1396,7 @@ Process {
 		
 		if ($ComputerManufacturer -match "Hewlett-Packard|HP") {
 			# Obtain current BIOS release
-			$CurrentBIOSProperties = (Get-WmiObject -Class Win32_BIOS | Select-Object -Property *)
+			$CurrentBIOSProperties = (Get-CimInstance -ClassName Win32_BIOS | Select-Object -Property *)
 			
 			# Update version formatting
 			$AvailableBIOSVersion = $AvailableBIOSVersion.TrimEnd(".")
@@ -1438,6 +1444,56 @@ Process {
 					}
 				}
 			}
+		}
+	}
+	
+	function Get-LenovoBIOSReleaseDate {
+		# Lenovo BIOS packages encode the release date in the package description, in the form
+		# "...:...:yyyyMMdd)". The original code called .Split(":")[2].TrimEnd(")") directly on the
+		# description, which threw "You cannot call a method on a null-valued expression" whenever the
+		# property was missing (notably the multiple-match branch, which read the non-existent
+		# PackageDescription property instead of Description) or the description was not in the expected
+		# shape. Return an empty string instead so the caller can degrade gracefully.
+		param (
+			[parameter(Mandatory = $false, HelpMessage = "Lenovo BIOS package object to extract the release date from.")]
+			$Package
+		)
+		
+		if ($null -eq $Package) {
+			return [string]::Empty
+		}
+		
+		# Prefer Description (the real SMS_Package property); fall back to PackageDescription for
+		# compatibility with any caller still supplying the legacy shape.
+		$DescriptionValue = $Package.Description
+		if ([string]::IsNullOrEmpty($DescriptionValue)) {
+			$DescriptionValue = $Package.PackageDescription
+		}
+		
+		if ([string]::IsNullOrEmpty($DescriptionValue)) {
+			Write-CMLogEntry -Value "Unable to determine the Lenovo BIOS release date, the package description is empty" -Severity 2
+			return [string]::Empty
+		}
+		
+		$DescriptionParts = $DescriptionValue -split ":"
+		if ($DescriptionParts.Count -lt 3) {
+			Write-CMLogEntry -Value "Unable to determine the Lenovo BIOS release date from package description: $($DescriptionValue)" -Severity 2
+			return [string]::Empty
+		}
+		
+		return ($DescriptionParts[2]).TrimEnd(")").Trim()
+	}
+	
+	function Set-NewBIOSAvailableFlag {
+		# Centralises writes to the NewBIOSAvailable task sequence variable so the Debug parameter set
+		# never touches the task sequence environment.
+		param (
+			[parameter(Mandatory = $true, HelpMessage = "Value to assign to the NewBIOSAvailable task sequence variable.")]
+			[bool]$Value
+		)
+		
+		if ($Script:PSCmdlet.ParameterSetName -notlike "Debug") {
+			$TSEnvironment.Value("NewBIOSAvailable") = $Value
 		}
 	}
 	
@@ -1537,6 +1593,8 @@ Process {
 					# Process matching items in package list and set task sequence variable
 					if ($PackageList.Count -ge 1) {
 						Write-CMLogEntry -Value "[BIOSValidation]: Starting BIOS package validation phase" -Severity 1
+						# Reset the flag so a stale value from an earlier task sequence step cannot force an unnecessary flash
+						Set-NewBIOSAvailableFlag -Value $false
 						# Determine the most current package from list
 						if ($PackageList.Count -eq 1) {
 							Write-CMLogEntry -Value "BIOS package list contains a single match, attempting to set task sequence variable" -Severity 1
@@ -1545,11 +1603,11 @@ Process {
 							if ($ComputerManufacturer -match "Dell") {
 								Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -ComputerManufacturer $ComputerManufacturer
 							} elseif ($ComputerManufacturer -match "Lenovo") {
-								Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -AvailableBIOSReleaseDate $(($PackageList[0].Description).Split(":")[2].Trimend(")")) -ComputerManufacturer $ComputerManufacturer
+								Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -AvailableBIOSReleaseDate (Get-LenovoBIOSReleaseDate -Package $PackageList[0]) -ComputerManufacturer $ComputerManufacturer
 							} elseif ($ComputerManufacturer -match "Hewlett-Packard|HP") {
 								Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -ComputerManufacturer $ComputerManufacturer
 							} elseif ($ComputerManufacturer -match "Microsoft") {
-								$NewBIOSAvailable = $true
+								Set-NewBIOSAvailableFlag -Value $true
 							}
 							
 							if ($Script:PSCmdlet.ParameterSetName -notlike "Debug") {
@@ -1590,7 +1648,7 @@ Process {
 							if ($ComputerManufacturer -match "Dell") {
 								$PackageList = $PackageList | Sort-Object -Property @{ Expression = { ConvertTo-PackageSourceDate -Value $_.SourceDate } } -Descending | Select-Object -First 1
 							} elseif ($ComputerManufacturer -eq "Lenovo") {
-								$ComputerDescription = Get-WmiObject -Class Win32_ComputerSystemProduct | Select-Object -ExpandProperty Version
+								$ComputerDescription = Get-CimInstance -ClassName Win32_ComputerSystemProduct | Select-Object -ExpandProperty Version
 								# Preserve the full match list so the fallback can use it if the model-name filter
 								# below returns nothing. The previous code re-sorted the already-nulled $PackageList,
 								# so the fallback never actually recovered a package and the run bailed out with exit 1.
@@ -1622,11 +1680,11 @@ Process {
 								if ($ComputerManufacturer -match "Dell") {
 									Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -ComputerManufacturer $ComputerManufacturer
 								} elseif ($ComputerManufacturer -match "Lenovo") {
-									Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -AvailableBIOSReleaseDate $(($PackageList[0].PackageDescription).Split(":")[2]).Trimend(")") -ComputerManufacturer $ComputerManufacturer
+									Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -AvailableBIOSReleaseDate (Get-LenovoBIOSReleaseDate -Package $PackageList[0]) -ComputerManufacturer $ComputerManufacturer
 								} elseif ($ComputerManufacturer -match "Hewlett-Packard|HP") {
 									Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -ComputerManufacturer $ComputerManufacturer
 								} elseif ($ComputerManufacturer -match "Microsoft") {
-									$NewBIOSAvailable = $true
+									Set-NewBIOSAvailableFlag -Value $true
 								}
 								
 								if ($Script:PSCmdlet.ParameterSetName -notlike "Debug") {
@@ -1708,7 +1766,7 @@ Process {
 	try {
 		Write-CMLogEntry -Value "[PrerequisiteChecker]: Starting environment prerequisite checker" -Severity 1
 		
-		# Determine the deployment type mode for driver package installation
+		# Determine the deployment type mode for BIOS package installation
 		Get-DeploymentType
 		
 		# Determine if running on supported computer system type
@@ -1720,7 +1778,7 @@ Process {
 		# Validate required computer details have successfully been gathered from WMI
 		Test-ComputerDetails -InputObject $ComputerData
 		
-		# Determine the computer detection method to be used for matching against driver packages
+		# Determine the computer detection method to be used for matching against BIOS packages
 		$ComputerDetectionMethod = Set-ComputerDetectionMethod
 		
 		Write-CMLogEntry -Value "[PrerequisiteChecker]: Completed environment prerequisite checker" -Severity 1
@@ -1757,7 +1815,7 @@ Process {
 		$BIOSPackages = Get-BIOSPackages
 		
 		# Get existing BIOS version
-		$CurrentBIOSVersion = (Get-WmiObject -Class Win32_BIOS | Select-Object -ExpandProperty SMBIOSBIOSVersion).Trim()
+		$CurrentBIOSVersion = (Get-CimInstance -ClassName Win32_BIOS | Select-Object -ExpandProperty SMBIOSBIOSVersion).Trim()
 		Write-CMLogEntry -Value "Current BIOS version determined as: $($CurrentBIOSVersion)" -Severity 1
 		$ComputerData = $ComputerData | Select-Object -first 1
 		

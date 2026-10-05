@@ -33,7 +33,7 @@
 			   	         exit code from the flash utility is now embedded in the Invoke-HPBIOSUpdate.log file.
 #>
 
-[CmdletBinding(SupportsShouldProcess = $true)]
+[CmdletBinding()]
 param(
 	[parameter(Mandatory = $true, HelpMessage = "Specify the path containing the HPBIOSUPDREC executable and bios update *.bin -file.")]
 	[ValidateNotNullOrEmpty()]
@@ -74,7 +74,7 @@ Process {
 		$LogFilePath = Join-Path -Path $Script:TSEnvironment.Value("_SMSTSLogPath") -ChildPath $FileName
 		
 		# Construct time stamp for log entry
-		$Time = -join @((Get-Date -Format "HH:mm:ss.fff"), "+", (Get-WmiObject -Class Win32_TimeZone | Select-Object -ExpandProperty Bias))
+		$Time = -join @((Get-Date -Format "HH:mm:ss.fff"), "+", (Get-CimInstance -ClassName Win32_TimeZone | Select-Object -ExpandProperty Bias))
 
 		# Construct date for log entry
 		$Date = (Get-Date -Format "MM-dd-yyyy")
@@ -103,28 +103,30 @@ Process {
 	
 	# Attempt to detect HPBIOSUPDREC utility file name
 	if (([Environment]::Is64BitOperatingSystem) -eq $true) {
-		$HPBIOSUPDUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPBIOSUPDREC64.exe" } | Select-Object -ExpandProperty FullName	
+		$HPBIOSUPDUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPBIOSUPDREC64.exe" } | Select-Object -First 1 -ExpandProperty FullName	
 	}
 	else {
-		$HPBIOSUPDUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPBIOSUPDREC.exe" } | Select-Object -ExpandProperty FullName	
+		$HPBIOSUPDUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPBIOSUPDREC.exe" } | Select-Object -First 1 -ExpandProperty FullName	
 	}
 
     # Attempt to detect HPFirmwareUpdRec utility file name
 	if (([Environment]::Is64BitOperatingSystem) -eq $true) {
-		$HPFirmwareUpdRec = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HpFirmwareUpdRec64.exe" } | Select-Object -ExpandProperty FullName
+		$HPFirmwareUpdRec = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HpFirmwareUpdRec64.exe" } | Select-Object -First 1 -ExpandProperty FullName
 	}
 	else {
-		$HPFirmwareUpdRec = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HpFirmwareUpdRec.exe" } | Select-Object -ExpandProperty FullName	
+		$HPFirmwareUpdRec = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HpFirmwareUpdRec.exe" } | Select-Object -First 1 -ExpandProperty FullName	
 	}
 
-    # Attempt to detect HPFirmwareUpdRec utility file name
+    # Attempt to detect HPQFlash utility file name
 	if (([Environment]::Is64BitOperatingSystem) -eq $true) {
-		$HPFlashUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPQFlash.exe" } | Select-Object -ExpandProperty FullName
+		$HPFlashUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPQFlash64.exe" } | Select-Object -First 1 -ExpandProperty FullName
 	}
 	else {
-		$HPFlashUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPQFlash64.exe" } | Select-Object -ExpandProperty FullName	
+		$HPFlashUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPQFlash.exe" } | Select-Object -First 1 -ExpandProperty FullName	
 	}
 
+	# Select a single flash utility in order of preference. These blocks must remain mutually exclusive, otherwise a
+	# package that ships more than one utility would silently overwrite the previously selected one.
 	if ($HPBIOSUPDUtil -ne $null) {	
 		# Set required switches for silent upgrade of the bios and logging
 		Write-CMLogEntry -Value "Using HPBIOSUpdRec BIOS update method" -Severity 1
@@ -132,18 +134,16 @@ Process {
 		$FlashSwitches = " -s -r"
 		$FlashUtility = $HPBIOSUPDUtil
 	}
-
-	if ($HPFirmwareUpdRec -ne $null) {	
+	elseif ($HPFirmwareUpdRec -ne $null) {	
 		# Set required switches for silent upgrade of the bios and logging
 		Write-CMLogEntry -Value "Using HPFirmwareUpdRec BIOS update method" -Severity 1
 		# This -r switch appears to be undocumented, which is a shame really, but this prevents the reboot without exit code. The command now returns a correct exit code and lets ConfigMgr reboot the computer gracefully.
 		$FlashSwitches = " -s -r"
 		$FlashUtility = $HPFirmwareUpdRec
 	}
-
-	if ($HPFlashUtil -ne $null) {	
+	elseif ($HPFlashUtil -ne $null) {	
 		# Set required switches for silent upgrade of the bios and logging
-		Write-CMLogEntry -Value "Using HPFirmwareUpdRec BIOS update method" -Severity 1
+		Write-CMLogEntry -Value "Using HPQFlash BIOS update method" -Severity 1
 		# This -r switch appears to be undocumented, which is a shame really, but this prevents the reboot without exit code. The command now returns a correct exit code and lets ConfigMgr reboot the computer gracefully.
 		$FlashSwitches = " -s -r"
 		$FlashUtility = $HPFlashUtil
@@ -155,7 +155,7 @@ Process {
 	
 	if (-not([System.String]::IsNullOrEmpty($PasswordBin))) {
 		# Add password to the flash bios switches
-		$FlashSwitches = $FlashSwitches + " -p$($PSScriptRoot)\$($PasswordBin)"	
+		$FlashSwitches = $FlashSwitches + " -p""$($PSScriptRoot)\$($PasswordBin)"""	
 		Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches)" -Severity 1
 	}
 	else {
@@ -168,43 +168,77 @@ Process {
 			# Start flash update process
 			Write-CMLogEntry -Value "Running Flash Update: $($FlashUtility)$($FlashSwitches)" -Severity 1
 			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -Passthru -Wait -ErrorAction Stop
+			$FlashExitCode = $FlashProcess.ExitCode
 
 			# Output Exit Code
-			Write-CMLogEntry -Value "Flash utility exit code: $($FlashProcess.ExitCode)" -Severity 1
+			Write-CMLogEntry -Value "Flash utility exit code: $($FlashExitCode)" -Severity 1
 		}
 		catch [System.Exception] {
 			Write-CMLogEntry -Value "An error occured while updating the system BIOS in WinPE phase. Error message: $($_.Exception.Message)" -Severity 3; exit 1	
+		}
+
+		# Evaluate the exit code returned by the flash utility. Only 0 (success) and 3010 (success, reboot required)
+		# are documented as successful, anything else has to fail the task sequence step.
+		switch ($FlashExitCode) {
+			{ $_ -in @(0, 3010) } {
+				Write-CMLogEntry -Value "The BIOS update completed successfully, a reboot is required to apply the new BIOS version." -Severity 1
+			}
+			default {
+				Write-CMLogEntry -Value "The BIOS update failed. Flash utility returned exit code: $($FlashExitCode)" -Severity 3; exit $FlashExitCode
+			}
 		}
 	}
 	else {
 		# Used in a later section of the task sequence
 		# Detect Bitlocker Status
-		$OSDriveEncrypted = $false
-		$EncryptedVolumes = Get-WmiObject -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -Class "Win32_EncryptableVolume"
-		foreach ($Volume in $EncryptedVolumes) {
-			if ($Volume.DriveLetter -like $env:SystemDrive) {
-				if ($Volume.EncryptionMethod -ge 1) {
+		try {
+			$OSDriveEncrypted = $false
+			$EncryptedVolumes = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction Stop | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
+			foreach ($Volume in $EncryptedVolumes) {
+				# ProtectionStatus of 1 means protection is currently on, which is what has to be suspended before flashing
+				if ($Volume.ProtectionStatus -eq 1) {
 					$OSDriveEncrypted = $true
 				}
 			}
 		}
+		catch [System.Exception] {
+			Write-CMLogEntry -Value "An error occured while detecting the BitLocker protection status of volume: $($env:SystemDrive). Error message: $($_.Exception.Message)" -Severity 3; exit 1
+		}
 				
-		# Supend Bitlocker if $OSVolumeEncypted is $true
+		# Suspend BitLocker if the operating system volume is protected
 		if ($OSDriveEncrypted -eq $true) {
 			Write-CMLogEntry -Value "Suspending BitLocker protected volume: $($env:SystemDrive)" -Severity 1
-			Manage-Bde -Protectors -Disable C:
+			Manage-Bde -Protectors -Disable $env:SystemDrive | Out-Null
+
+			# Verify that protection was actually suspended before flashing the BIOS
+			$VerifyVolume = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
+			if (($VerifyVolume -eq $null) -or ($VerifyVolume.ProtectionStatus -ne 0)) {
+				Write-CMLogEntry -Value "Failed to suspend BitLocker protection on volume: $($env:SystemDrive). Aborting BIOS update to prevent a recovery key prompt." -Severity 3; exit 1
+			}
 		}		
 		
 		# Start Bios update process
 		try {			
 			Write-CMLogEntry -Value "Running Flash Update: $($FlashUtility)$($FlashSwitches)" -Severity 1
-			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -Passthru -Wait			
+			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -Passthru -Wait -ErrorAction Stop
+			$FlashExitCode = $FlashProcess.ExitCode
 			
 			# Output Exit Code
-			Write-CMLogEntry -Value "Flash utility exit code: $($FlashProcess.ExitCode)" -Severity 1
+			Write-CMLogEntry -Value "Flash utility exit code: $($FlashExitCode)" -Severity 1
 		}
 		catch [System.Exception] {
-			Write-Warning -Message "An error occured while updating the system BIOS in Full OS phase. Error message: $($_.Exception.Message)"; exit 1
+			Write-CMLogEntry -Value "An error occured while updating the system BIOS in Full OS phase. Error message: $($_.Exception.Message)" -Severity 3; exit 1
+		}
+
+		# Evaluate the exit code returned by the flash utility. Only 0 (success) and 3010 (success, reboot required)
+		# are documented as successful, anything else has to fail the task sequence step.
+		switch ($FlashExitCode) {
+			{ $_ -in @(0, 3010) } {
+				Write-CMLogEntry -Value "The BIOS update completed successfully, a reboot is required to apply the new BIOS version." -Severity 1
+			}
+			default {
+				Write-CMLogEntry -Value "The BIOS update failed. Flash utility returned exit code: $($FlashExitCode)" -Severity 3; exit $FlashExitCode
+			}
 		}
 	}
 }

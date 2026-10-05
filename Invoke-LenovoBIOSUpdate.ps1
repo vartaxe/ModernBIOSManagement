@@ -38,7 +38,7 @@
 	1.0.8 - (2019-05-01) Fixed a bug where the script would show an error and fail if the WinUPTP log file could not be found
 	1.0.9 - (2019-05-14) Handle $Password to check if empty string or null instead of just null value
 #>
-[CmdletBinding(SupportsShouldProcess = $true)]
+[CmdletBinding()]
 param (
 	[parameter(Mandatory = $true, HelpMessage = "Specify the path containing the Flash64W.exe and BIOS executable.")]
 	[ValidateNotNullOrEmpty()]
@@ -78,7 +78,7 @@ Process {
 		$LogFilePath = Join-Path -Path $Script:TSEnvironment.Value("_SMSTSLogPath") -ChildPath $FileName
 		
 		# Construct time stamp for log entry
-		$Time = -join @((Get-Date -Format "HH:mm:ss.fff"), "+", (Get-WmiObject -Class Win32_TimeZone | Select-Object -ExpandProperty Bias))
+		$Time = -join @((Get-Date -Format "HH:mm:ss.fff"), "+", (Get-CimInstance -ClassName Win32_TimeZone | Select-Object -ExpandProperty Bias))
 		
 		# Construct date for log entry
 		$Date = (Get-Date -Format "MM-dd-yyyy")
@@ -105,19 +105,21 @@ Process {
 	# Check for required DLL's
 	if ((Test-Path -Path (Join-Path -Path $Path -ChildPath "OLEDLG.dll")) -eq $False) {
 		Write-CMLogEntry -Value "Copying OLEDLG.dll to $($Path) directory" -Severity 1
+		
+		# Build an ordered list of candidate source locations. Previously the OSDisk branch was an
+		# independent if-statement, so when OSDisk was populated but did not contain the DLL the
+		# remaining fallbacks were never evaluated and the missing DLL went unreported.
+		$OLEDLGCandidates = New-Object -TypeName System.Collections.ArrayList
 		if (([string]::IsNullOrEmpty($TSEnvironment.Value("OSDisk"))) -eq $false) {
-			IF (Test-Path -Path (Join-Path -path $TSEnvironment.Value("OSDisk") -ChildPath "Windows\System32\OLEDLG.dll")){
-				Copy-Item -Path (Join-Path -path $TSEnvironment.Value("OSDisk") -ChildPath "Windows\System32\OLEDLG.dll") -Destination "$($Path)\OLEDLG.dll"
-			}
+			$OLEDLGCandidates.Add((Join-Path -Path $TSEnvironment.Value("OSDisk") -ChildPath "Windows\System32\OLEDLG.dll")) | Out-Null
 		}
-		elseif ((Test-Path -Path "C:\Windows\System32\OLEDLG.dll") -eq $true) {
-			Copy-Item -Path "C:\Windows\System32\OLEDLG.dll" -Destination "$($Path)\OLEDLG.dll"
+		foreach ($DriveLetter in @("C:", "D:", "X:")) {
+			$OLEDLGCandidates.Add("$($DriveLetter)\Windows\System32\OLEDLG.dll") | Out-Null
 		}
-		elseif ((Test-Path -Path "D:\Windows\System32\OLEDLG.dll") -eq $true) {
-			Copy-Item -Path "D:\Windows\System32\OLEDLG.dll" -Destination "$($Path)\OLEDLG.dll"
-		}
-		elseif ((Test-Path -Path "X:\Windows\System32\OLEDLG.dll") -eq $true) {
-			Copy-Item -Path "X:\Windows\System32\OLEDLG.dll" -Destination "$($Path)\OLEDLG.dll"
+		
+		$OLEDLGSource = $OLEDLGCandidates | Where-Object { Test-Path -Path $_ } | Select-Object -First 1
+		if (-not([string]::IsNullOrEmpty($OLEDLGSource))) {
+			Copy-Item -Path $OLEDLGSource -Destination "$($Path)\OLEDLG.dll"
 		}
 		else {
 			Write-CMLogEntry -Value "Failed to copy DLL file. Aborting update process" -Severity 3; exit 1
@@ -125,29 +127,33 @@ Process {
 	}
 	
 	# WinUPTP bios upgrade utility file name
+	# NOTE: -First 1 is required, a recursive search can return multiple matches which would
+	# otherwise produce an array and corrupt the -FilePath argument passed to Start-Process.
 	if (([Environment]::Is64BitOperatingSystem) -eq $true) {
-		$WinUPTPUtility = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "WinUPTP64.exe"	} | Select-Object -ExpandProperty FullName
+		$WinUPTPUtility = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "WinUPTP64.exe"	} | Select-Object -First 1 -ExpandProperty FullName
 	}
 	else {
-		$WinUPTPUtility = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "WinUPTP.exe" } | Select-Object -ExpandProperty FullName
+		$WinUPTPUtility = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "WinUPTP.exe" } | Select-Object -First 1 -ExpandProperty FullName
 	}
 	
-    # Flash CMD upgrade utility file name
-    if (([Environment]::Is64BitOperatingSystem) -eq $true) {
-        $FlashCMDUtility = Get-ChildItem -Path $Path -Filter "*.cmd" -Recurse | Where-Object { $_.Name -like "Flash64.cmd" } | Select-Object -ExpandProperty FullName
-    }
-    else {
-        $FlashCMDUtility = Get-ChildItem -Path $Path -Filter "*.cmd" -Recurse | Where-Object { $_.Name -like "Flash.cmd" } | Select-Object -ExpandProperty FullName
-    }
-
-	if ($WinUPTPUtility -ne $null) {
+	# Flash CMD upgrade utility file name
+	if (([Environment]::Is64BitOperatingSystem) -eq $true) {
+		$FlashCMDUtility = Get-ChildItem -Path $Path -Filter "*.cmd" -Recurse | Where-Object { $_.Name -like "Flash64.cmd" } | Select-Object -First 1 -ExpandProperty FullName
+	}
+	else {
+		$FlashCMDUtility = Get-ChildItem -Path $Path -Filter "*.cmd" -Recurse | Where-Object { $_.Name -like "Flash.cmd" } | Select-Object -First 1 -ExpandProperty FullName
+	}
+	
+	# Select a single update method. These were previously two independent if-statements, which meant
+	# that a package shipping both utilities would silently fall through to Flash.cmd while having
+	# already logged that WinUPTP would be used.
+	if (-not([string]::IsNullOrEmpty($WinUPTPUtility))) {
 		# Set required switches for silent upgrade of the bios and logging
-		Write-CMLogEntry -Value "Using WinUTPT BIOS update method" -Severity 1
+		Write-CMLogEntry -Value "Using WinUPTP BIOS update method" -Severity 1
 		$FlashSwitches = " /S"
 		$FlashUtility = $WinUPTPUtility
 	}
-	
-	if ($FlashCMDUtility -ne $null) {
+	elseif (-not([string]::IsNullOrEmpty($FlashCMDUtility))) {
 		# Set required switches for silent upgrade of the bios and logging
 		Write-CMLogEntry -Value "Using FlashCMDUtility BIOS update method" -Severity 1
 		$FlashSwitches = " /quiet /sccm /ign"
@@ -155,13 +161,15 @@ Process {
 	}
 	
 	if (-not($FlashUtility)) {
-		Write-CMLogEntry -Value "Supported upgrade utility was not found." -Severity 3; break
+		Write-CMLogEntry -Value "Supported upgrade utility was not found." -Severity 3; exit 1
 	}
 	
 	if (-not([System.String]::IsNullOrEmpty($Password))) {
 		# Add password to the flash bios switches
 		$FlashSwitches = $FlashSwitches + " /pass:$($Password)"
-		Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches -replace $Password, "<Password Removed>")" -Severity 1
+		# Escape the password before using it as a regular expression pattern, otherwise a password
+		# containing regex meta characters would either fail to be masked or throw a parsing error.
+		Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches -replace [regex]::Escape($Password), "<Password Removed>")" -Severity 1
 	}
 	else {
 		Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches)" -Severity 1
@@ -173,49 +181,86 @@ Process {
 	if (($TSEnvironment -ne $null) -and ($TSEnvironment.Value("_SMSTSinWinPE") -eq $true)) {
 		try {
 			# Start flash update process
-			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList "$FlashSwitches" -Passthru -Wait
+			Write-CMLogEntry -Value "Running Flash Update - $($FlashUtility)" -Severity 1
+			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList "$FlashSwitches" -Passthru -Wait -ErrorAction Stop
+			$FlashExitCode = $FlashProcess.ExitCode
 			
-			#Output Exit Code for testing purposes
-			$FlashProcess.ExitCode | Out-File -FilePath $LogFilePath
+			# Output Exit Code for testing purposes
+			$FlashExitCode | Out-File -FilePath $LogFilePath
 			
-			#Get winuptp.log file
-			$WinUPTPLog = Get-ChildItem -Filter "*.log" -Recurse | Where-Object { $_.Name -like "winuptp.log" } -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
-			if ($WinUPTPLog -ne $null) {
+			# Get winuptp.log file. Scoped to the package path and limited to the first match, since
+			# multiple results would previously be passed to Copy-Item as an array.
+			$WinUPTPLog = Get-ChildItem -Path $Path -Filter "winuptp.log" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+			if (-not([string]::IsNullOrEmpty($WinUPTPLog))) {
 				Write-CMLogEntry -Value "winuptp.log file path is $($WinUPTPLog)" -Severity 1
 				$SMSTSLogPath = Join-Path -Path $TSEnvironment.Value("_SMSTSLogPath") -ChildPath "winuptp.log"
 				Copy-Item -Path $WinUPTPLog -Destination $SMSTSLogPath -Force -ErrorAction SilentlyContinue
 			}
+			
+			# Evaluate the exit code. Previously it was only written to a file and never acted upon,
+			# so a failed flash would still report the step as successful.
+			switch ($FlashExitCode) {
+				0 {
+					Write-CMLogEntry -Value "BIOS update completed with exit code $($FlashExitCode). A restart is required to apply the update" -Severity 1
+				}
+				1073807364 {
+					# 0x3FFF0004, reported by the community as a non-fatal result for WinUPTP
+					Write-CMLogEntry -Value "BIOS update returned exit code $($FlashExitCode). This code is commonly reported as a non-fatal result, review winuptp.log to confirm the outcome" -Severity 2
+				}
+				default {
+					Write-CMLogEntry -Value "BIOS update failed with exit code $($FlashExitCode)" -Severity 3; exit $FlashExitCode
+				}
+			}
 		}
 		catch [System.Exception] {
-			Write-CMLogEntry -Value "An error occured while updating the system BIOS in OS online phase. Error message: $($_.Exception.Message)" -Severity 3; exit 1
+			Write-CMLogEntry -Value "An error occured while updating the system BIOS in WinPE phase. Error message: $($_.Exception.Message)" -Severity 3; exit 1
 		}
 	}
 	else {
-		# Detect Bitlocker Status
-		$OSVolumeEncypted = if ((Manage-Bde -Status C:) -match "Protection On") {
-			Write-Output $True
-		}
-		else {
-			Write-Output $False
-		}
+		# Detect BitLocker status for the operating system volume using CIM instead of parsing
+		# localized manage-bde console output, which is unreliable on non-English systems.
+		$OSVolume = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
+		$OSVolumeEncrypted = if (($OSVolume -ne $null) -and ($OSVolume.ProtectionStatus -eq 1)) { $true } else { $false }
 		
-		# Supend Bitlocker if $OSVolumeEncypted is $true
-		if ($OSVolumeEncypted -eq $true) {
-			Write-CMLogEntry -Value "Suspending BitLocker protected volume: C:" -Severity 1
-			Manage-Bde -Protectors -Disable C:
+		# Suspend BitLocker if the operating system volume is protected
+		if ($OSVolumeEncrypted -eq $true) {
+			Write-CMLogEntry -Value "Suspending BitLocker protected volume: $($env:SystemDrive)" -Severity 1
+			Manage-Bde -Protectors -Disable $env:SystemDrive
+			
+			# Verify that protection was actually suspended before flashing, a failed suspension
+			# combined with a BIOS update can leave the device requiring the recovery key
+			$OSVolume = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
+			if (($OSVolume -eq $null) -or ($OSVolume.ProtectionStatus -ne 0)) {
+				Write-CMLogEntry -Value "Failed to suspend BitLocker protection on volume $($env:SystemDrive), aborting BIOS update to prevent a recovery key prompt" -Severity 3; exit 1
+			}
 		}
 		
 		# Start BIOS update process
 		try {
 			Write-CMLogEntry -Value "Running Flash Update - $($FlashUtility)" -Severity 1
-			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList "$($FlashSwitches)" -Passthru -Wait
+			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList "$($FlashSwitches)" -Passthru -Wait -ErrorAction Stop
+			$FlashExitCode = $FlashProcess.ExitCode
 			
 			# Output Exit Code for testing purposes
-			$FlashProcess.ExitCode | Out-File -FilePath $LogFilePath
+			$FlashExitCode | Out-File -FilePath $LogFilePath
+			
+			# Evaluate the exit code instead of assuming success
+			switch ($FlashExitCode) {
+				0 {
+					Write-CMLogEntry -Value "BIOS update completed with exit code $($FlashExitCode). A restart is required to apply the update" -Severity 1
+				}
+				1073807364 {
+					# 0x3FFF0004, reported by the community as a non-fatal result for WinUPTP
+					Write-CMLogEntry -Value "BIOS update returned exit code $($FlashExitCode). This code is commonly reported as a non-fatal result, review winuptp.log to confirm the outcome" -Severity 2
+				}
+				default {
+					Write-CMLogEntry -Value "BIOS update failed with exit code $($FlashExitCode)" -Severity 3; exit $FlashExitCode
+				}
+			}
 		}
 		catch [System.Exception]
 		{
-			Write-Warning -Message "An error occured while updating the system bios. Error message: $($_.Exception.Message)"; exit 1
+			Write-CMLogEntry -Value "An error occured while updating the system BIOS in OS online phase. Error message: $($_.Exception.Message)" -Severity 3; exit 1
 		}
 	}
 }

@@ -23,7 +23,7 @@
 	1.0.1 - (2019-07-25) Minor fixes
 	1.0.2 - (2020-04-11) Removed unnecessary parameter Path, it was never used in the script
 #>
-[CmdletBinding(SupportsShouldProcess=$true)]
+[CmdletBinding()]
 param(
     [parameter(Mandatory=$false, HelpMessage="Set the name of the log file produced by the flash utility.")]
     [ValidateNotNullOrEmpty()]
@@ -35,7 +35,8 @@ Begin {
 		$TSEnvironment = New-Object -ComObject Microsoft.SMS.TSEnvironment -ErrorAction Stop
 	}
 	catch [System.Exception] {
-		Write-Warning -Message "Unable to construct Microsoft.SMS.TSEnvironment object"
+		Write-Warning -Message "Unable to construct Microsoft.SMS.TSEnvironment object. Error message: $($_.Exception.Message)"
+		exit 1
 	}
 }
 Process {
@@ -56,13 +57,17 @@ Process {
 
 		    [parameter(Mandatory=$false, HelpMessage="Name of the log file that the entry will written to.")]
 		    [ValidateNotNullOrEmpty()]
-		    [string]$FileName = "Invoke-MicrosoftBIOSUpdate.log"
+		    [string]$FileName = $Script:LogFileName
 	    )
-	    # Determine log file location
-        $LogFilePath = Join-Path -Path $TSEnvironment.Value("_SMSTSLogPath") -ChildPath $FileName
+	    # Determine log file location, falling back to the local logs directory when not running inside a task sequence
+        $LogDirectoryPath = $TSEnvironment.Value("_SMSTSLogPath")
+        if ([string]::IsNullOrEmpty($LogDirectoryPath)) {
+            $LogDirectoryPath = $LogsDirectory
+        }
+        $LogFilePath = Join-Path -Path $LogDirectoryPath -ChildPath $FileName
 
         # Construct time stamp for log entry
-        $Time = -join @((Get-Date -Format "HH:mm:ss.fff"), "+", (Get-WmiObject -Class Win32_TimeZone | Select-Object -ExpandProperty Bias))
+        $Time = -join @((Get-Date -Format "HH:mm:ss.fff"), "+", (Get-CimInstance -ClassName Win32_TimeZone | Select-Object -ExpandProperty Bias))
 
         # Construct date for log entry
         $Date = (Get-Date -Format "MM-dd-yyyy")
@@ -108,11 +113,13 @@ Process {
 		# Invoke executable and wait for process to exit
 		try {
 			$Invocation = Start-Process @SplatArgs
-			$Handle = $Invocation.Handle
+			# Caching the process handle ensures the ExitCode property is populated once the process ends
+			$null = $Invocation.Handle
 			$Invocation.WaitForExit()
 		}
 		catch [System.Exception] {
-			Write-Warning -Message $_.Exception.Message; break
+			Write-CMLogEntry -Value "Failed to invoke '$($FilePath)'. Error message: $($_.Exception.Message)" -Severity 3
+			return 1
 		}
 		
 		return $Invocation.ExitCode
@@ -128,9 +135,28 @@ Process {
 	if (-not([string]::IsNullOrEmpty($OSDFirmwarePackageLocation))){
 		# Write log file for script execution
 		Write-CMLogEntry -Value "Initiating pnputil to apply firmware updates" -Severity 1
-		$ApplyFirmwareInvocation = Invoke-Executable -FilePath "powershell.exe" -Arguments "pnputil /add-driver $(Join-Path -Path $OSDFirmwarePackageLocation -ChildPath '*.inf') /subdirs /install | Out-File -FilePath (Join-Path -Path $($LogsDirectory) -ChildPath 'Install-MicrosoftFirmware.txt') -Force"											
+		
+		$FirmwareInfPath = Join-Path -Path $OSDFirmwarePackageLocation -ChildPath "*.inf"
+		$FirmwareLogPath = Join-Path -Path $LogsDirectory -ChildPath "Install-MicrosoftFirmware.txt"
+		
+		# Paths are quoted to support spaces and the native exit code is propagated back to the caller
+		$PnPUtilCommand = "pnputil.exe /add-driver '$($FirmwareInfPath)' /subdirs /install | Out-File -FilePath '$($FirmwareLogPath)' -Force; exit `$LASTEXITCODE"
+		$ApplyFirmwareInvocation = Invoke-Executable -FilePath "powershell.exe" -Arguments "-ExecutionPolicy Bypass -NoProfile -Command ""& { $($PnPUtilCommand) }"""
+		
+		switch ($ApplyFirmwareInvocation) {
+			0 {
+				Write-CMLogEntry -Value "Firmware update staging completed successfully" -Severity 1
+			}
+			3010 {
+				Write-CMLogEntry -Value "Firmware update staging completed successfully, a reboot is required to apply the firmware" -Severity 1
+			}
+			default {
+				Write-CMLogEntry -Value "Firmware update staging failed with exit code: $($ApplyFirmwareInvocation)" -Severity 3
+				exit $ApplyFirmwareInvocation
+			}
 		}
+	}
 	else {
-		Write-CMLogEntry -Value "Unable to determine BIOS package path." -Severity 2 ; exit 1
+		Write-CMLogEntry -Value "Unable to determine BIOS package path." -Severity 3 ; exit 1
 	}
 }

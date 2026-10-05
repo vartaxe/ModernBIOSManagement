@@ -42,7 +42,7 @@
 	1.1.0 - (2019-05-14) Handle log output correctly if $Password is not specified
 	1.1.1 - (2026-09-13) Added opt-in /novideo support for compatible headless systems
 #>
-[CmdletBinding(SupportsShouldProcess=$true)]
+[CmdletBinding()]
 param(
     [parameter(Mandatory=$false, HelpMessage="Specify the path containing the Flash64W.exe and BIOS executable.")]
     [ValidateNotNullOrEmpty()]
@@ -89,7 +89,7 @@ Process {
         $LogFilePath = Join-Path -Path $TSEnvironment.Value("_SMSTSLogPath") -ChildPath $FileName
 
         # Construct time stamp for log entry
-        $Time = -join @((Get-Date -Format "HH:mm:ss.fff"), "+", (Get-WmiObject -Class Win32_TimeZone | Select-Object -ExpandProperty Bias))
+        $Time = -join @((Get-Date -Format "HH:mm:ss.fff"), "+", (Get-CimInstance -ClassName Win32_TimeZone | Select-Object -ExpandProperty Bias))
 
         # Construct date for log entry
         $Date = (Get-Date -Format "MM-dd-yyyy")
@@ -122,12 +122,16 @@ Process {
 		Write-CMLogEntry -Value "Initiating script to determine flashing capabilities for Dell BIOS updates" -Severity 1
 
 		# Flash BIOS upgrade utility file name
-		$FlashUtility = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "Flash64W.exe" } | Select-Object -ExpandProperty FullName
+		$FlashUtility = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "Flash64W.exe" } | Select-Object -First 1 -ExpandProperty FullName
 		Write-CMLogEntry -Value "Attempting to use flash utility: $($FlashUtility)" -Severity 1
 
 		if ($FlashUtility -ne $null) {
 			# Detect BIOS update executable
-			$CurrentBIOSFile = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -notlike ($FlashUtility | Split-Path -leaf) } | Select-Object -ExpandProperty FullName
+			$CurrentBIOSFileItems = @(Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -notlike ($FlashUtility | Split-Path -leaf) } | Select-Object -ExpandProperty FullName)
+			if ($CurrentBIOSFileItems.Count -gt 1) {
+				Write-CMLogEntry -Value "Multiple BIOS update executables were found in the package, unable to determine which one to use. Files found: $($CurrentBIOSFileItems -join ", ")" -Severity 3; exit 1
+			}
+			$CurrentBIOSFile = $CurrentBIOSFileItems | Select-Object -First 1
 			Write-CMLogEntry -Value "Attempting to use BIOS update file: $($CurrentBIOSFile)" -Severity 1	
 
 			if ($CurrentBIOSFile -ne $null) {
@@ -135,7 +139,7 @@ Process {
 				$BIOSLogFile = Join-Path -Path $TSEnvironment.Value("_SMSTSLogPath") -ChildPath $LogFileName
 
 				# Set required switches for silent upgrade of the bios and logging
-				$FlashSwitches = "/b=$($CurrentBIOSFile) /s /l=$($BIOSLogFile)"
+				$FlashSwitches = "/b=""$($CurrentBIOSFile)"" /s /l=""$($BIOSLogFile)"""
 
 				# Add password to the Flash64W.exe switches
 				if ($PSBoundParameters["Password"]) {
@@ -161,17 +165,22 @@ Process {
 						}
 						$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -Passthru -Wait -ErrorAction Stop
 						
+						Write-CMLogEntry -Value "Flash utility exit code: $($FlashProcess.ExitCode)" -Severity 1
+
 						# Set reboot flag if restart required determined (exit code 2)
-						if ($FlashProcess.ExitCode -match "0|2") {
-							# Set reboot required flag
-							$TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
-							$TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
-						}
-						elseif ($FlashProcess.ExitCode -eq "10") {
-							Write-CMLogEntry -Value "Laptop is on battery power. The AC power must be connected to successfully flash the BIOS." -Severity 3; exit 1
-						}
-						else {
-							Write-CMLogEntry -Value "An error occured while updating the system BIOS during OS offline phase. Please review the log file located at $($BIOSLogFile)" -Severity 3; exit 1
+						# Exit codes must be compared as integers, a regex match such as "0|2" would also accept 10, 12, 20 and 120
+						switch ($FlashProcess.ExitCode) {
+							{ $_ -in @(0, 2) } {
+								# Set reboot required flag
+								$TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
+								$TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
+							}
+							10 {
+								Write-CMLogEntry -Value "Laptop is on battery power. The AC power must be connected to successfully flash the BIOS." -Severity 3; exit 1
+							}
+							default {
+								Write-CMLogEntry -Value "An error occured while updating the system BIOS during OS offline phase, exit code was $($FlashProcess.ExitCode). Please review the log file located at $($BIOSLogFile)" -Severity 3; exit 1
+							}
 						}
 						
 					}
@@ -185,13 +194,28 @@ Process {
 
 					Write-CMLogEntry -Value "Current environment is determined as FullOS" -Severity 1
 					
-					# Detect Bitlocker Status
-					$OSVolumeEncypted = if ((Manage-Bde -Status C:) -match "Protection On") { Write-Output $true } else { Write-Output $false }
+					# Detect BitLocker status through CIM instead of parsing localized Manage-Bde output
+					$OSVolumeEncypted = $false
+					try {
+						$OSVolume = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction Stop | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
+						if (($OSVolume -ne $null) -and ($OSVolume.ProtectionStatus -eq 1)) {
+							$OSVolumeEncypted = $true
+						}
+					}
+					catch [System.Exception] {
+						Write-CMLogEntry -Value "Unable to determine BitLocker status for volume $($env:SystemDrive). Error message: $($_.Exception.Message)" -Severity 3; exit 1
+					}
 					
 					# Supend Bitlocker if $OSVolumeEncypted is $true, remember to re-enable BitLocker after the flashing has occurred
 					if ($OSVolumeEncypted -eq $true) {
-						Write-CMLogEntry -Value "Suspending BitLocker protected volume: C:" -Severity 1
-						Manage-Bde -Protectors -Disable C:
+						Write-CMLogEntry -Value "Suspending BitLocker protected volume: $($env:SystemDrive)" -Severity 1
+						Manage-Bde -Protectors -Disable $env:SystemDrive | Out-Null
+
+						# Confirm that protection was actually suspended before flashing, a locked volume during flash can render the device unbootable
+						$OSVolume = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
+						if (($OSVolume -eq $null) -or ($OSVolume.ProtectionStatus -ne 0)) {
+							Write-CMLogEntry -Value "Failed to suspend BitLocker protection on volume $($env:SystemDrive), aborting BIOS update to avoid leaving the device in an unbootable state." -Severity 3; exit 1
+						}
 					}
 					
 					# Start BIOS update process
@@ -207,10 +231,11 @@ Process {
 
 							# Update BIOS using Flash64W.exe
 							$FlashUpdate = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -Passthru -Wait -ErrorAction Stop
+							$FlashExitCode = $FlashUpdate.ExitCode
 						}
 						else {
 							# Set required switches for silent upgrade of the BIOS
-							$FileSwitches = " /l=$($BIOSLogFile) /s"
+							$FileSwitches = " /l=""$($BIOSLogFile)"" /s"
 
 							# Add password to switches
 							if ($PSBoundParameters["Password"]) {
@@ -225,19 +250,34 @@ Process {
 
 							Write-CMLogEntry -Value "Starting 32-bit flash BIOS update process" -Severity 1
 							if (-not([System.String]::IsNullOrEmpty($Password))) {
-								Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches -replace $Password, "<password removed>")" -Severity 1
+								Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FileSwitches -replace $Password, "<password removed>")" -Severity 1
 							}
 							else {
-								Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches)" -Severity 1
+								Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FileSwitches)" -Severity 1
 							}
 
 							# Update BIOS using update file
 							$FileUpdate = Start-Process -FilePath $CurrentBIOSFile -ArgumentList $FileSwitches -PassThru -Wait -ErrorAction Stop
+							$FlashExitCode = $FileUpdate.ExitCode
 						}
 						
 					}
 					catch [System.Exception] {
 						Write-CMLogEntry -Value "An error occured while updating the system BIOS in OS online phase. Error message: $($_.Exception.Message)" -Severity 3; exit 1
+					}
+
+					# Evaluate the exit code returned by the flash utility, previously the result was discarded and every run was reported as a success
+					Write-CMLogEntry -Value "Flash utility exit code: $($FlashExitCode)" -Severity 1
+					switch ($FlashExitCode) {
+						{ $_ -in @(0, 2) } {
+							Write-CMLogEntry -Value "BIOS update completed successfully, a restart is required to apply the new BIOS" -Severity 1
+						}
+						10 {
+							Write-CMLogEntry -Value "BIOS update could not be applied as the device is running on battery power, connect AC power and retry" -Severity 3; exit 1
+						}
+						default {
+							Write-CMLogEntry -Value "BIOS update failed with exit code $($FlashExitCode)" -Severity 3; exit 1
+						}
 					}
 				}
 			}

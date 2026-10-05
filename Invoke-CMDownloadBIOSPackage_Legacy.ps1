@@ -61,7 +61,7 @@
 	2.1.3 - (2019-11-25) Removed the OSUpgrade deployment type as it was not used within this script
 	2.1.4 - (2019-12-02) Updated Microsoft Surface logic as firmware will be contained within the driver package for new packages with DAT 6.4.0 
 #>
-[CmdletBinding(SupportsShouldProcess = $true)]
+[CmdletBinding()]
 param (
 	[parameter(Mandatory = $true, HelpMessage = "Set the URI for the ConfigMgr WebService.")]
 	[ValidateNotNullOrEmpty()]
@@ -133,7 +133,7 @@ Process {
 		$LogFilePath = Join-Path -Path $LogsDirectory -ChildPath $FileName
 		
 		# Construct time stamp for log entry
-		$Time = -join @((Get-Date -Format "HH:mm:ss.fff"), "+", (Get-WmiObject -Class Win32_TimeZone | Select-Object -ExpandProperty Bias))
+		$Time = -join @((Get-Date -Format "HH:mm:ss.fff"), "+", (Get-CimInstance -ClassName Win32_TimeZone | Select-Object -ExpandProperty Bias))
 		
 		# Construct date for log entry
 		$Date = (Get-Date -Format "MM-dd-yyyy")
@@ -287,7 +287,7 @@ Process {
 		
 		if ($ComputerManufacturer -match "Dell") {
 			# Obtain current BIOS release
-			$CurrentBIOSVersion = (Get-WmiObject -Class Win32_BIOS | Select-Object -ExpandProperty SMBIOSBIOSVersion).Trim()
+			$CurrentBIOSVersion = (Get-CimInstance -ClassName Win32_BIOS | Select-Object -ExpandProperty SMBIOSBIOSVersion).Trim()
 			Write-CMLogEntry -Value "Current BIOS release detected as $($CurrentBIOSVersion)." -Severity 1
 			Write-CMLogEntry -Value "Available BIOS release deteced as $($AvailableBIOSVersion)." -Severity 1
 			
@@ -324,7 +324,7 @@ Process {
 		
 		if ($ComputerManufacturer -match "Lenovo") {
 			# Obtain current BIOS release
-			$CurrentBIOSReleaseDate = ((Get-WmiObject -Class Win32_BIOS | Select-Object -Property *).ReleaseDate).SubString(0, 8)
+			$CurrentBIOSReleaseDate = (Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop).ReleaseDate.ToString("yyyyMMdd", [System.Globalization.CultureInfo]::InvariantCulture)
 			Write-CMLogEntry -Value "Current BIOS release date detected as $($CurrentBIOSReleaseDate)." -Severity 1
 			Write-CMLogEntry -Value "Available BIOS release date detected as $($AvailableBIOSReleaseDate)." -Severity 1
 			
@@ -340,7 +340,7 @@ Process {
 		
 		if ($ComputerManufacturer -match "Hewlett-Packard") {
 			# Obtain current BIOS release
-			$CurrentBIOSProperties = (Get-WmiObject -Class Win32_BIOS | Select-Object -Property *)
+			$CurrentBIOSProperties = (Get-CimInstance -ClassName Win32_BIOS | Select-Object -Property *)
 
 			# Update version formatting
 			$AvailableBIOSVersion = $AvailableBIOSVersion.TrimEnd(".")
@@ -397,35 +397,35 @@ Process {
 	Write-CMLogEntry -Value "BIOS download package process initiated" -Severity 1
 	
 	# Determine manufacturer
-	$ComputerManufacturer = (Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty Manufacturer).Trim()
+	$ComputerManufacturer = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Manufacturer).Trim()
 	Write-CMLogEntry -Value "Manufacturer determined as: $($ComputerManufacturer)" -Severity 1
 	
 	# Determine manufacturer name and hardware information
 	switch -Wildcard ($ComputerManufacturer) {
 		"*Microsoft*" {
 			$ComputerManufacturer = "Microsoft"
-			$ComputerModel = (Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
-			$SystemSKU = Get-WmiObject -Namespace root\wmi -Class MS_SystemInformation | Select-Object -ExpandProperty SystemSKU
+			$ComputerModel = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
+			$SystemSKU = Get-CimInstance -Namespace root\wmi -ClassName MS_SystemInformation | Select-Object -ExpandProperty SystemSKU
 		}
 		"*HP*" {
 			$ComputerManufacturer = "Hewlett-Packard"
-			$ComputerModel = (Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
+			$ComputerModel = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
 			$SystemSKU = (Get-CIMInstance -ClassName MS_SystemInformation -NameSpace root\WMI).BaseBoardProduct.Trim()
 		}
 		"*Hewlett-Packard*" {
 			$ComputerManufacturer = "Hewlett-Packard"
-			$ComputerModel = (Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
+			$ComputerModel = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
 			$SystemSKU = (Get-CIMInstance -ClassName MS_SystemInformation -NameSpace root\WMI).BaseBoardProduct.Trim()
 		}
 		"*Dell*" {
 			$ComputerManufacturer = "Dell"
-			$ComputerModel = (Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
+			$ComputerModel = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
 			$SystemSKU = (Get-CIMInstance -ClassName MS_SystemInformation -NameSpace root\WMI).SystemSku.Trim()
 		}
 		"*Lenovo*" {
 			$ComputerManufacturer = "Lenovo"
-			$ComputerModel = (Get-WmiObject -Class Win32_ComputerSystemProduct | Select-Object -ExpandProperty Version).Trim()
-			$SystemSKU = ((Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty Model).SubString(0, 4)).Trim()
+			$ComputerModel = (Get-CimInstance -ClassName Win32_ComputerSystemProduct | Select-Object -ExpandProperty Version).Trim()
+			$SystemSKU = ((Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).SubString(0, 4)).Trim()
 		}
 	}
 	Write-CMLogEntry -Value "Computer model determined as: $($ComputerModel)" -Severity 1
@@ -435,7 +435,7 @@ Process {
 	$Manufacturers = @("Dell", "Hewlett-Packard", "Lenovo","Microsoft")
 	
 	# Get existing BIOS version
-	$CurrentBIOSVersion = (Get-WmiObject -Class Win32_BIOS | Select-Object -ExpandProperty SMBIOSBIOSVersion).Trim()
+	$CurrentBIOSVersion = (Get-CimInstance -ClassName Win32_BIOS | Select-Object -ExpandProperty SMBIOSBIOSVersion).Trim()
 	Write-CMLogEntry -Value "Current BIOS version determined as: $($CurrentBIOSVersion)" -Severity 1
 	
 	# Construct new web service proxy
@@ -467,7 +467,7 @@ Process {
 	
 	# Validate supported system was detected
 	# Validate not virtual machine
-	$ComputerSystemType = Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty "Model"
+	$ComputerSystemType = Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty "Model"
 	
 	if ($ComputerSystemType -notin @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM")) {
 		# Process packages returned from web service
@@ -587,7 +587,7 @@ Process {
 							$PackageList = $PackageList | Sort-Object -Property PackageCreated -Descending | Select-Object -First 1
 						}
 						elseif ($ComputerManufacturer -eq "Lenovo") {
-							$ComputerDescription = Get-WmiObject -Class Win32_ComputerSystemProduct | Select-Object -ExpandProperty Version
+							$ComputerDescription = Get-CimInstance -ClassName Win32_ComputerSystemProduct | Select-Object -ExpandProperty Version
 							# Attempt to find exact model match for Lenovo models which overlap model types
 							$PackageList = $PackageList | Where-object {
 								($_.PackageName -like "*$ComputerDescription") -and ($_.PackageManufacturer -match $ComputerManufacturer)
