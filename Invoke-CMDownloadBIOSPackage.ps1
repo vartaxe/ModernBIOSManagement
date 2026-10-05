@@ -1271,9 +1271,49 @@ Process {
 		return $ComputerDetails
 	}
 	
+	function Test-VirtualMachinePlatform {
+		param (
+			[parameter(Mandatory = $false, HelpMessage = "Specify the Win32_ComputerSystem Model value to be evaluated.")]
+			[AllowEmptyString()]
+			[AllowNull()]
+			[string]$Model,
+			[parameter(Mandatory = $false, HelpMessage = "Specify the Win32_ComputerSystem Manufacturer value to be evaluated.")]
+			[AllowEmptyString()]
+			[AllowNull()]
+			[string]$Manufacturer
+		)
+		# Single source of truth for virtual platform detection. Previously this list was duplicated in
+		# two locations with divergent entries, which meant a VMware guest could pass one gate and fail
+		# the other. Virtual machines expose no physical firmware flash chip, so they are never valid
+		# BIOS update targets.
+		$VirtualMachineModels = @(
+			"Virtual Machine", # Hyper-V
+			"VMware Virtual Platform", "VMware7,1", "VMware20,1", "VMware Virtual Platform None", # VMware
+			"VirtualBox", # Oracle VirtualBox
+			"HVM domU", # Xen / AWS EC2
+			"KVM", "QEMU Virtual Machine", "Standard PC (Q35 + ICH9, 2009)", "Standard PC (i440FX + PIIX, 1996)", # KVM / QEMU / Proxmox
+			"Parallels Virtual Platform", # Parallels
+			"Google Compute Engine", # GCP
+			"AHV" # Nutanix
+		)
+		if ($Model -in $VirtualMachineModels) {
+			return $true
+		}
+		
+		# Manufacturer based detection catches hypervisor hardware revisions that are not yet in the model
+		# list above. "Microsoft Corporation" is deliberately excluded since it is also reported by Surface.
+		if (-not([string]::IsNullOrEmpty($Manufacturer))) {
+			if ($Manufacturer -match "VMware|QEMU|innotek|Xen|Parallels|Nutanix|Red Hat|Google|Amazon EC2|OpenStack") {
+				return $true
+			}
+		}
+		
+		return $false
+	}
+	
 	function Get-ComputerSystemType {
-		$ComputerSystemType = Get-CimInstance -ClassName "Win32_ComputerSystem" | Select-Object -ExpandProperty "Model"
-		if ($ComputerSystemType -notin @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM", "VMWare7,1")) {
+		$ComputerSystem = Get-CimInstance -ClassName "Win32_ComputerSystem"
+		if (-not(Test-VirtualMachinePlatform -Model $ComputerSystem.Model -Manufacturer $ComputerSystem.Manufacturer)) {
 			Write-CMLogEntry -Value " - Supported computer platform detected, script execution allowed to continue" -Severity 1
 		} else {
 			if ($Script:PSCmdlet.ParameterSetName -like "Debug") {
@@ -1514,7 +1554,7 @@ Process {
 		
 		$PackageList = New-Object -TypeName System.Collections.ArrayList
 		
-		if ($ComputerSystemType -notin @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM")) {
+		if (-not(Test-VirtualMachinePlatform -Model $ComputerSystemType -Manufacturer $ComputerManufacturer)) {
 			# Process packages returned from web service
 			if ($null -ne $BIOSPackages) {
 				if (($null -ne $ComputerSystemType) -and (-not ([System.String]::IsNullOrEmpty($ComputerSystemType))) -or (($null -ne $SystemSKU) -and (-not ([System.String]::IsNullOrEmpty($SystemSKU))))) {

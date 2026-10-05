@@ -31,3 +31,15 @@ Failure paths now exit with the original Dell exit code instead of a blanket `ex
 `SMSTSBIOSUpdateColdBootRequired` is a new task-sequence variable. Codes 15 and 16 require a full power cycle rather than a warm restart, so the script records the requirement and lets the task sequence decide when to shut the machine down; a warm `Restart Computer` step does not apply those updates.
 
 The other vendor scripts are unchanged in this respect: HP uses 0 and 3010, Lenovo WinUPTP uses 0 and the benign 1073807364, and no further authoritative code tables were applied.
+
+## Virtual machine detection
+
+A virtual machine has no physical flash chip. The guest BIOS/UEFI is a binary template owned by the hypervisor and is changed by updating the hypervisor host or raising the VM hardware compatibility version, never by running a vendor firmware payload inside the guest. Running a Dell Update Package in a guest returns exit code 5 (QUAL_HARD_ERROR), which `Invoke-DellBIOSUpdate.ps1` correctly treats as a hard failure and exits 5, failing the task sequence.
+
+`Invoke-CMDownloadBIOSPackage.ps1` previously carried two separate inline virtual machine model lists that had already drifted apart, so a VMware guest could pass one gate and fail the other. Both call sites now use a single `Test-VirtualMachinePlatform` helper that matches the known Hyper-V, VMware, VirtualBox, Xen, KVM/QEMU, Parallels, Google Compute Engine and Nutanix AHV model strings, with a manufacturer regex fallback. `Microsoft` is deliberately absent from that regex because Surface devices report `Microsoft Corporation` exactly like Hyper-V guests; Hyper-V is matched on the `Virtual Machine` model string instead.
+
+The four vendor flash scripts previously had no virtual machine detection at all, so invoking one directly outside the downloader attempted a flash and failed hard. Each now exits 0 with a severity 2 log entry before any BitLocker suspension or working directory change, so a guest is skipped cleanly rather than leaving BitLocker suspended behind a failed step.
+
+`Invoke-CMDownloadBIOSPackage_Legacy.ps1` keeps its inline model-only list, widened to the same model strings, to preserve the frozen state of that script.
+
+Hypervisor integration suites such as VMware Tools, Hyper-V Integration Services and VirtIO are driver and tooling packages, not firmware, and remain out of scope for this solution.

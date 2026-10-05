@@ -109,6 +109,18 @@ Process {
         }
     }
 	
+	# A virtual machine has no physical firmware flash chip. The guest BIOS/UEFI is a software template
+	# owned by the hypervisor, so Dell Update Packages refuse to execute and return exit code 5
+	# (QUAL_HARD_ERROR), which would fail the task sequence. Skip gracefully instead.
+	$ComputerSystem = Get-CimInstance -ClassName "Win32_ComputerSystem" -ErrorAction SilentlyContinue
+	if ($ComputerSystem -ne $null) {
+		$VirtualMachineModels = @("Virtual Machine", "VMware Virtual Platform", "VMware7,1", "VMware20,1", "VirtualBox", "HVM domU", "KVM", "QEMU Virtual Machine", "Standard PC (Q35 + ICH9, 2009)", "Standard PC (i440FX + PIIX, 1996)", "Parallels Virtual Platform", "Google Compute Engine", "AHV")
+		if (($ComputerSystem.Model -in $VirtualMachineModels) -or ($ComputerSystem.Manufacturer -match "VMware|QEMU|innotek|Xen|Parallels|Nutanix|Red Hat")) {
+			Write-CMLogEntry -Value "Virtual machine detected ('$($ComputerSystem.Manufacturer) $($ComputerSystem.Model)'). BIOS/UEFI firmware is managed by the hypervisor, skipping BIOS flash" -Severity 2
+			exit 0
+		}
+	}
+	
 	# Default to task sequence variable set in detection script
 	if (-not([string]::IsNullOrEmpty($TSEnvironment.Value("OSDBIOSPackage01")))){
 		Write-CMLogEntry -Value "Using BIOS package location set in OSDBIOSPackage01 TS variable" -Severity 1
