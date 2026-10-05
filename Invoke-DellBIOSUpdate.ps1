@@ -167,19 +167,53 @@ Process {
 						
 						Write-CMLogEntry -Value "Flash utility exit code: $($FlashProcess.ExitCode)" -Severity 1
 
-						# Set reboot flag if restart required determined (exit code 2)
+						# Evaluate the Dell Update Package (DUP) exit code, see the DUP exit code table for the full list
 						# Exit codes must be compared as integers, a regex match such as "0|2" would also accept 10, 12, 20 and 120
 						switch ($FlashProcess.ExitCode) {
-							{ $_ -in @(0, 2) } {
-								# Set reboot required flag
+							0 {
+								# SUCCESSFUL - update applied, no restart required
+								Write-CMLogEntry -Value "BIOS update completed successfully, no restart is required" -Severity 1
+								$TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
+							}
+							{ $_ -in @(2, 14) } {
+								# REBOOT_REQUIRED - the update is staged and a restart applies it
+								Write-CMLogEntry -Value "BIOS update staged successfully, a restart is required to apply the new BIOS" -Severity 1
 								$TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
 								$TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
 							}
+							3 {
+								# DEP_SOFT_ERROR - typically the same version is already installed or a downgrade was attempted, non-blocking
+								Write-CMLogEntry -Value "Flash utility reported a soft dependency error (exit code 3), the system is likely already running this BIOS version. No update was applied." -Severity 2
+								$TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
+							}
+							6 {
+								# REBOOTING_SYSTEM - the flash utility is restarting the device itself, do not trigger a second restart
+								Write-CMLogEntry -Value "Flash utility has taken control of the power state and is restarting the system (exit code 6)" -Severity 1
+								$TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
+							}
+							13 {
+								# UPDATE_SUCCESSFUL with unmet soft dependencies
+								Write-CMLogEntry -Value "BIOS update completed successfully, however one or more soft dependencies were not met (exit code 13)" -Severity 2
+								$TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
+							}
+							{ $_ -in @(15, 16) } {
+								# CONTAINER_POWER_CYCLE_REQUIRED - a full power cycle is required, a warm restart will not apply the firmware
+								Write-CMLogEntry -Value "BIOS update staged successfully, however a full power cycle (cold boot) is required to apply the firmware. A warm restart will not complete the update." -Severity 2
+								$TSEnvironment.Value("SMSTSBIOSUpdateColdBootRequired") = "True"
+								$TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
+								$TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
+							}
+							4 {
+								Write-CMLogEntry -Value "A hard dependency was not met by the flash utility (exit code 4), the required prerequisite BIOS version or hardware is missing. Please review the log file located at $($BIOSLogFile)" -Severity 3; exit 4
+							}
+							5 {
+								Write-CMLogEntry -Value "The flash utility refused to run on this system (exit code 5, qualification error). This cannot be bypassed with the force switch. Please review the log file located at $($BIOSLogFile)" -Severity 3; exit 5
+							}
 							10 {
-								Write-CMLogEntry -Value "Laptop is on battery power. The AC power must be connected to successfully flash the BIOS." -Severity 3; exit 1
+								Write-CMLogEntry -Value "Laptop is on battery power. The AC power must be connected to successfully flash the BIOS." -Severity 3; exit 10
 							}
 							default {
-								Write-CMLogEntry -Value "An error occured while updating the system BIOS during OS offline phase, exit code was $($FlashProcess.ExitCode). Please review the log file located at $($BIOSLogFile)" -Severity 3; exit 1
+								Write-CMLogEntry -Value "An error occured while updating the system BIOS during OS offline phase, exit code was $($FlashProcess.ExitCode). Please review the log file located at $($BIOSLogFile)" -Severity 3; exit $FlashProcess.ExitCode
 							}
 						}
 						
@@ -269,14 +303,48 @@ Process {
 					# Evaluate the exit code returned by the flash utility, previously the result was discarded and every run was reported as a success
 					Write-CMLogEntry -Value "Flash utility exit code: $($FlashExitCode)" -Severity 1
 					switch ($FlashExitCode) {
-						{ $_ -in @(0, 2) } {
+						0 {
+							# SUCCESSFUL - update applied, no restart required
+							Write-CMLogEntry -Value "BIOS update completed successfully, no restart is required" -Severity 1
+						}
+						{ $_ -in @(2, 14) } {
+							# REBOOT_REQUIRED - the update is staged and a restart applies it
 							Write-CMLogEntry -Value "BIOS update completed successfully, a restart is required to apply the new BIOS" -Severity 1
+							if ($TSEnvironment -ne $null) {
+								$TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
+							}
+						}
+						3 {
+							# DEP_SOFT_ERROR - typically the same version is already installed or a downgrade was attempted, non-blocking
+							Write-CMLogEntry -Value "Flash utility reported a soft dependency error (exit code 3), the system is likely already running this BIOS version. No update was applied." -Severity 2
+						}
+						6 {
+							# REBOOTING_SYSTEM - the flash utility is restarting the device itself, do not trigger a second restart
+							Write-CMLogEntry -Value "Flash utility has taken control of the power state and is restarting the system (exit code 6)" -Severity 1
+						}
+						13 {
+							# UPDATE_SUCCESSFUL with unmet soft dependencies
+							Write-CMLogEntry -Value "BIOS update completed successfully, however one or more soft dependencies were not met (exit code 13)" -Severity 2
+						}
+						{ $_ -in @(15, 16) } {
+							# CONTAINER_POWER_CYCLE_REQUIRED - a full power cycle is required, a warm restart will not apply the firmware
+							Write-CMLogEntry -Value "BIOS update completed successfully, however a full power cycle (cold boot) is required to apply the firmware. A warm restart will not complete the update." -Severity 2
+							if ($TSEnvironment -ne $null) {
+								$TSEnvironment.Value("SMSTSBIOSUpdateColdBootRequired") = "True"
+								$TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
+							}
+						}
+						4 {
+							Write-CMLogEntry -Value "A hard dependency was not met by the flash utility (exit code 4), the required prerequisite BIOS version or hardware is missing. Please review the log file located at $($BIOSLogFile)" -Severity 3; exit 4
+						}
+						5 {
+							Write-CMLogEntry -Value "The flash utility refused to run on this system (exit code 5, qualification error). This cannot be bypassed with the force switch. Please review the log file located at $($BIOSLogFile)" -Severity 3; exit 5
 						}
 						10 {
-							Write-CMLogEntry -Value "BIOS update could not be applied as the device is running on battery power, connect AC power and retry" -Severity 3; exit 1
+							Write-CMLogEntry -Value "BIOS update could not be applied as the device is running on battery power, connect AC power and retry" -Severity 3; exit 10
 						}
 						default {
-							Write-CMLogEntry -Value "BIOS update failed with exit code $($FlashExitCode)" -Severity 3; exit 1
+							Write-CMLogEntry -Value "BIOS update failed with exit code $($FlashExitCode). Please review the log file located at $($BIOSLogFile)" -Severity 3; exit $FlashExitCode
 						}
 					}
 				}
