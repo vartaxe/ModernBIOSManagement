@@ -1311,6 +1311,38 @@ Process {
 		return $false
 	}
 	
+	function Test-SecureBootCertificateStatus {
+		# Reports Secure Boot certificate posture ahead of the 2026 expiry of the original 2011 Microsoft
+		# certificates. Strictly read-only and non-terminating: remediation is owned by OEM firmware updates,
+		# Windows servicing or the hypervisor (vSphere host upgrade, Hyper-V host updates, Proxmox EFI disk
+		# certificate enrolment), never by a BIOS flash. The outcome is surfaced as a task sequence variable
+		# so a task sequence can branch on it without parsing the log.
+		$CertificateUpdated = $false
+		
+		try {
+			if ($null -eq (Get-Command -Name "Confirm-SecureBootUEFI" -ErrorAction SilentlyContinue)) {
+				Write-CMLogEntry -Value " - Secure Boot cmdlets are not available on this platform, skipping Secure Boot certificate check" -Severity 2
+			} elseif ((Confirm-SecureBootUEFI -ErrorAction Stop) -ne $true) {
+				Write-CMLogEntry -Value " - Secure Boot is not enabled, skipping Secure Boot certificate check" -Severity 2
+			} else {
+				$SignatureDatabase = Get-SecureBootUEFI -Name "db" -ErrorAction Stop
+				$SignatureDatabaseText = [System.Text.Encoding]::ASCII.GetString($SignatureDatabase.Bytes)
+				if ($SignatureDatabaseText -match "Windows UEFI CA 2023") {
+					$CertificateUpdated = $true
+					Write-CMLogEntry -Value " - Secure Boot signature database contains 'Windows UEFI CA 2023', no action required ahead of the 2026 certificate expiry" -Severity 1
+				} else {
+					Write-CMLogEntry -Value " - Secure Boot signature database does not contain 'Windows UEFI CA 2023'. The 2011 certificates expire in 2026, remediate through OEM firmware updates, Windows servicing or the hypervisor" -Severity 2
+				}
+			}
+		} catch [System.Exception] {
+			Write-CMLogEntry -Value " - Unable to determine Secure Boot certificate status. Error message: $($_.Exception.Message)" -Severity 2
+		}
+		
+		if ($Script:PSCmdlet.ParameterSetName -notlike "Debug") {
+			$TSEnvironment.Value("SecureBootCertificate2023Present") = $CertificateUpdated
+		}
+	}
+	
 	function Get-ComputerSystemType {
 		$ComputerSystem = Get-CimInstance -ClassName "Win32_ComputerSystem"
 		if (-not(Test-VirtualMachinePlatform -Model $ComputerSystem.Model -Manufacturer $ComputerSystem.Manufacturer)) {
@@ -1808,6 +1840,10 @@ Process {
 		
 		# Determine the deployment type mode for BIOS package installation
 		Get-DeploymentType
+		
+		# Report Secure Boot certificate posture. Intentionally evaluated before the virtual machine gate
+		# below so virtual machines, which terminate script execution, are still reported on.
+		Test-SecureBootCertificateStatus
 		
 		# Determine if running on supported computer system type
 		Get-ComputerSystemType

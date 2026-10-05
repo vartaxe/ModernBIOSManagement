@@ -43,3 +43,20 @@ The four vendor flash scripts previously had no virtual machine detection at all
 `Invoke-CMDownloadBIOSPackage_Legacy.ps1` keeps its inline model-only list, widened to the same model strings, to preserve the frozen state of that script.
 
 Hypervisor integration suites such as VMware Tools, Hyper-V Integration Services and VirtIO are driver and tooling packages, not firmware, and remain out of scope for this solution.
+
+## Secure Boot certificate expiry (2026)
+
+The original Microsoft Secure Boot certificates issued in 2011 expire in June and October 2026 and are replaced by `Windows UEFI CA 2023`. Systems whose signature database has not been updated log Event ID 1796 or 1803 and can stop accepting signed boot components and firmware updates. This is firmware state, not an operating system setting, so `Invoke-CMDownloadBIOSPackage.ps1` reports it.
+
+`Test-SecureBootCertificateStatus` reads `Get-SecureBootUEFI -Name db` and looks for the `Windows UEFI CA 2023` string, then writes the boolean task-sequence variable `SecureBootCertificate2023Present`. The check is detection only: it never blocks, delays or alters a BIOS flash, and a negative result is logged at severity 2 rather than failing the step.
+
+The check runs during the prerequisite phase, deliberately before the virtual machine gate, because a virtual machine carries the same certificates in its virtual NVRAM and would otherwise never be reported. It is wrapped so that a missing `SecureBoot` module, a legacy BIOS system or a WinPE image without the Secure Boot cmdlets logs a skip instead of terminating the script under `$ErrorActionPreference = "Stop"`.
+
+Remediation is out of band and platform specific, and on a guest it cannot be performed from inside the operating system:
+
+| Platform | Remediation |
+| --- | --- |
+| Physical hardware | OEM firmware update plus the Windows servicing updates that enroll the 2023 certificates |
+| VMware vSphere | Upgrade hosts to ESXi 8.0 U3j or newer; VMs created before 8.0 U2 commonly have a null Platform Key, and guests with a vTPM need an additional manual transition |
+| Hyper-V and Azure | Host cumulative updates; Windows Server Gen 2 guests usually need the enrollment triggered manually |
+| Proxmox, KVM and QEMU | Shut the VM down, then use Enroll Updated Certificates on the EFI disk in the hypervisor |
