@@ -46,17 +46,33 @@ Hypervisor integration suites such as VMware Tools, Hyper-V Integration Services
 
 ## Secure Boot certificate expiry (2026)
 
-The original Microsoft Secure Boot certificates issued in 2011 expire in June and October 2026 and are replaced by `Windows UEFI CA 2023`. Systems whose signature database has not been updated log Event ID 1796 or 1803 and can stop accepting signed boot components and firmware updates. This is firmware state, not an operating system setting, so `Invoke-CMDownloadBIOSPackage.ps1` reports it.
+Microsoft's 2011 Secure Boot certificates expire on three dates: Microsoft Corporation KEK CA 2011 on June 24, Microsoft Corporation UEFI CA 2011 on June 27, and Microsoft Windows Production PCA 2011 on October 19, 2026. Their replacements span the KEK and DB: `Microsoft Corporation KEK 2K CA 2023`, `Windows UEFI CA 2023`, `Microsoft UEFI CA 2023`, and `Microsoft Option ROM UEFI CA 2023`.
 
-`Test-SecureBootCertificateStatus` reads `Get-SecureBootUEFI -Name db` and looks for the `Windows UEFI CA 2023` string, then writes the boolean task-sequence variable `SecureBootCertificate2023Present`. The check is detection only: it never blocks, delays or alters a BIOS flash, and a negative result is logged at severity 2 rather than failing the step.
+An untransitioned system continues to boot and receive standard Windows updates after expiry, but it cannot receive future boot-chain protections that depend on the 2023 trust anchors. Do not use Event IDs 1796 or 1803 as general expiry indicators: 1796 is an unexpected Secure Boot update error and 1803 identifies a missing OEM-signed KEK. Microsoft documents `UEFICA2023Status=Updated` and Event ID 1808 as completion signals; Event 1801 indicates incomplete servicing and Event 1795 a firmware error.
 
-The check runs during the prerequisite phase, deliberately before the virtual machine gate, because a virtual machine carries the same certificates in its virtual NVRAM and would otherwise never be reported. It is wrapped so that a missing `SecureBoot` module, a legacy BIOS system or a WinPE image without the Secure Boot cmdlets logs a skip instead of terminating the script under `$ErrorActionPreference = "Stop"`.
+`Test-SecureBootCertificateStatus` is read-only and reports two task-sequence variables:
 
-Remediation is out of band and platform specific, and on a guest it cannot be performed from inside the operating system:
+- `SecureBootCertificate2023Present` is `True` only when `Windows UEFI CA 2023` is observed in the UEFI DB.
+- `SecureBootCertificate2023Status` distinguishes `Updated`, `Present`, `NotPresent`, `Disabled`, `Unavailable`, and `Error`. `Updated` requires the Windows servicing value `UEFICA2023Status=Updated`, which confirms the complete certificate and 2023-signed Boot Manager transition; DB presence alone reports `Present`.
 
-| Platform | Remediation |
+The check never blocks, delays, or alters a BIOS flash. It runs before the virtual-machine gate because VMs also store certificates in virtual NVRAM. Missing Secure Boot cmdlets, legacy BIOS, disabled Secure Boot, and WinPE limitations are reported without terminating the script under `$ErrorActionPreference = "Stop"`.
+
+Remediation is coordinated by Windows servicing with the physical or virtual firmware; it is not universally host-only:
+
+| Platform | Current remediation model |
 | --- | --- |
-| Physical hardware | OEM firmware update plus the Windows servicing updates that enroll the 2023 certificates |
-| VMware vSphere | Upgrade hosts to ESXi 8.0 U3j or newer; VMs created before 8.0 U2 commonly have a null Platform Key, and guests with a vTPM need an additional manual transition |
-| Hyper-V and Azure | Host cumulative updates; Windows Server Gen 2 guests usually need the enrollment triggered manually |
-| Proxmox, KVM and QEMU | Shut the VM down, then use Enroll Updated Certificates on the EFI disk in the hypervisor |
+| Physical hardware | Apply supported Windows servicing; install an OEM firmware update first when the firmware cannot process authenticated DB/KEK updates. |
+| VMware vSphere | ESXi 8.0 U3j adds automated PK remediation for vTPM-disabled VMs. vTPM-enabled VMs on ESXi 8.x still need Broadcom's manual procedure; the capsule path requires ESX 9.1.1.0+, VMware Tools 13.1.5+, a supported Windows guest, and the July 2026 Windows CU. Update KEK/DB through the guest OS after PK readiness. |
+| Hyper-V | For long-lived Generation 2 VMs, apply the updates through Windows when the virtual firmware supports authenticated Secure Boot writes; monitor `UEFICA2023Status` and the documented events. Windows Server may require an administrator-initiated deployment rather than client Controlled Feature Rollout. |
+| Azure Trusted Launch / Confidential VMs | Updates are initiated through Windows servicing inside the guest and rely on Azure platform support for virtual-firmware writes. VMs created after March 2024 typically already contain the 2023 firmware certificates but still require the updated Boot Manager. |
+| Proxmox VE / QEMU | New EFI disks created with `pve-edk2-firmware` 4.2025.05-1 or later contain both certificate generations. For older EFI disks, shut down the VM and use **Disk Action > Enroll Updated Certificates** or `qm enroll-efi-keys`; suspend BitLocker protectors first. |
+
+Authoritative references:
+
+- [Microsoft: Windows Secure Boot certificate expiration and CA updates](https://support.microsoft.com/en-us/servicing/os/secure-boot/2025/06/windows-secure-boot-certificate-expiration-and-ca-updates)
+- [Microsoft: Guidance for IT professionals and organizations](https://support.microsoft.com/en-us/servicing/os/secure-boot/2025/06/secure-boot-certificate-updates-guidance-for-it-professionals-and-organizations)
+- [Microsoft: Registry monitoring and deployment keys](https://support.microsoft.com/en-us/servicing/os/secure-boot/2025/09/registry-key-updates-for-secure-boot-windows-devices-with-it-managed-updates)
+- [Microsoft: Secure Boot DB, DBX, and KEK events](https://support.microsoft.com/en-us/servicing/os/windows/2022/06/secure-boot-db-and-dbx-variable-update-events)
+- [Microsoft: Azure Trusted Launch and Confidential VM guidance](https://support.microsoft.com/en-us/servicing/os/secure-boot/docs/2026/03/secure-boot-update-from-2011-to-2023-certificates-trusted-launch-vms-tvm-and-confidential-vms-cvm)
+- [Broadcom: vSphere Secure Boot certificate expiration FAQ](https://knowledge.broadcom.com/external/article/423893/secure-boot-certificate-expirations-and.html)
+- [Proxmox: 2023 certificate enrollment documentation change](https://lists.proxmox.com/pipermail/pve-devel/2026-January/078081.html)

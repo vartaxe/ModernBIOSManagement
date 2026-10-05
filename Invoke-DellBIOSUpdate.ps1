@@ -222,7 +222,8 @@ Process {
 								Write-CMLogEntry -Value "The flash utility refused to run on this system (exit code 5, qualification error). This cannot be bypassed with the force switch. Please review the log file located at $($BIOSLogFile)" -Severity 3; exit 5
 							}
 							10 {
-								Write-CMLogEntry -Value "Laptop is on battery power. The AC power must be connected to successfully flash the BIOS." -Severity 3; exit 10
+								# Code 10 is package-specific and is not assigned by Dell's generic DUP exit-code table; client BIOS packages commonly use it for a power prerequisite.
+								Write-CMLogEntry -Value "The BIOS utility returned package-specific exit code 10. Verify AC power and battery requirements, then review the log file located at $($BIOSLogFile)" -Severity 3; exit 10
 							}
 							default {
 								Write-CMLogEntry -Value "An error occured while updating the system BIOS during OS offline phase, exit code was $($FlashProcess.ExitCode). Please review the log file located at $($BIOSLogFile)" -Severity 3; exit $FlashProcess.ExitCode
@@ -353,7 +354,8 @@ Process {
 							Write-CMLogEntry -Value "The flash utility refused to run on this system (exit code 5, qualification error). This cannot be bypassed with the force switch. Please review the log file located at $($BIOSLogFile)" -Severity 3; exit 5
 						}
 						10 {
-							Write-CMLogEntry -Value "BIOS update could not be applied as the device is running on battery power, connect AC power and retry" -Severity 3; exit 10
+							# Code 10 is package-specific and is not assigned by Dell's generic DUP exit-code table; client BIOS packages commonly use it for a power prerequisite.
+							Write-CMLogEntry -Value "The BIOS utility returned package-specific exit code 10. Verify AC power and battery requirements, then review the log file located at $($BIOSLogFile)" -Severity 3; exit 10
 						}
 						default {
 							Write-CMLogEntry -Value "BIOS update failed with exit code $($FlashExitCode). Please review the log file located at $($BIOSLogFile)" -Severity 3; exit $FlashExitCode

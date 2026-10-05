@@ -1313,36 +1313,49 @@ Process {
 	
 	function Test-SecureBootCertificateStatus {
 		# Reports Secure Boot certificate posture ahead of the 2026 expiry of the original 2011 Microsoft
-		# certificates. Strictly read-only and non-terminating: remediation is owned by OEM firmware updates,
-		# Windows servicing or the hypervisor (vSphere host upgrade, Hyper-V host updates, Proxmox EFI disk
-		# certificate enrolment), never by a BIOS flash. The outcome is surfaced as a task sequence variable
-		# so a task sequence can branch on it without parsing the log.
-		$CertificateUpdated = $false
+		# certificates. Strictly read-only and non-terminating: Windows servicing coordinates the transition
+		# with physical or virtual firmware, and some platforms also require an OEM or hypervisor update.
+		# Presence of Windows UEFI CA 2023 in DB is useful but does not by itself prove the complete transition;
+		# Microsoft defines UEFICA2023Status=Updated as completion of all keys and the new boot manager.
+		$CertificatePresent = $false
+		$CertificateStatus = "Unknown"
 		
 		try {
 			if ($null -eq (Get-Command -Name "Confirm-SecureBootUEFI" -ErrorAction SilentlyContinue)) {
+				$CertificateStatus = "Unavailable"
 				Write-CMLogEntry -Value " - Secure Boot cmdlets are not available on this platform, skipping Secure Boot certificate check" -Severity 2
 			} elseif ((Confirm-SecureBootUEFI -ErrorAction Stop) -ne $true) {
+				$CertificateStatus = "Disabled"
 				Write-CMLogEntry -Value " - Secure Boot is not enabled, skipping Secure Boot certificate check" -Severity 2
 			} else {
 				$SignatureDatabase = Get-SecureBootUEFI -Name "db" -ErrorAction Stop
 				$SignatureDatabaseText = [System.Text.Encoding]::ASCII.GetString($SignatureDatabase.Bytes)
 				if ($SignatureDatabaseText -match "Windows UEFI CA 2023") {
-					$CertificateUpdated = $true
-					Write-CMLogEntry -Value " - Secure Boot signature database contains 'Windows UEFI CA 2023', no action required ahead of the 2026 certificate expiry" -Severity 1
+					$CertificatePresent = $true
+					$ServicingState = Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\Servicing" -Name "UEFICA2023Status" -ErrorAction SilentlyContinue
+					if ($ServicingState.UEFICA2023Status -eq "Updated") {
+						$CertificateStatus = "Updated"
+						Write-CMLogEntry -Value " - Secure Boot 2023 certificate transition is complete (UEFICA2023Status=Updated)" -Severity 1
+					} else {
+						$CertificateStatus = "Present"
+						Write-CMLogEntry -Value " - Secure Boot signature database contains 'Windows UEFI CA 2023', but the complete certificate and boot manager transition is not confirmed" -Severity 2
+					}
 				} else {
-					Write-CMLogEntry -Value " - Secure Boot signature database does not contain 'Windows UEFI CA 2023'. The 2011 certificates expire in 2026, remediate through OEM firmware updates, Windows servicing or the hypervisor" -Severity 2
+					$CertificateStatus = "NotPresent"
+					Write-CMLogEntry -Value " - Secure Boot signature database does not contain 'Windows UEFI CA 2023'. The 2011 certificates expire in 2026, remediate through Windows servicing and any required OEM or hypervisor update" -Severity 2
 				}
 			}
 		} catch [System.Exception] {
+			$CertificateStatus = "Error"
 			Write-CMLogEntry -Value " - Unable to determine Secure Boot certificate status. Error message: $($_.Exception.Message)" -Severity 2
 		}
 		
 		if ($Script:PSCmdlet.ParameterSetName -notlike "Debug") {
-			$TSEnvironment.Value("SecureBootCertificate2023Present") = $CertificateUpdated
+			$TSEnvironment.Value("SecureBootCertificate2023Present") = $CertificatePresent
+			$TSEnvironment.Value("SecureBootCertificate2023Status") = $CertificateStatus
 		}
 	}
-	
+
 	function Get-ComputerSystemType {
 		$ComputerSystem = Get-CimInstance -ClassName "Win32_ComputerSystem"
 		if (-not(Test-VirtualMachinePlatform -Model $ComputerSystem.Model -Manufacturer $ComputerSystem.Manufacturer)) {
