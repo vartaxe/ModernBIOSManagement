@@ -61,6 +61,13 @@ app-only access, migrate unattended workloads to a service principal with a
 certificate credential; review Microsoft's
 [ROPC limitations and migration guidance](https://learn.microsoft.com/entra/identity-platform/v2-oauth-ropc).
 
+For internal AdminService authentication, the configured user name is attempted
+first. If it receives `401 Unauthorized`, the script can retry inferred UPN and
+down-level domain-qualified forms. This is compatibility handling for environments
+that reject a bare account name, not a Microsoft-documented ConfigMgr 2603
+UPN-only requirement. Prefer an explicit UPN to avoid ambiguous domain inference,
+and validate the account format and policy in your own site.
+
 ## Transport and BitLocker safety
 
 Both downloaders enforce normal HTTPS certificate validation. Configure the ConfigMgr AdminService or legacy web service with a server-authentication certificate that chains to a root trusted by the full operating system and the WinPE boot image. The scripts do not install a global certificate callback or accept an untrusted/self-signed endpoint. Import the issuing CA chain into WinPE when an enterprise PKI is used.
