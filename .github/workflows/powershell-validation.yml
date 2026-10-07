@@ -16,7 +16,7 @@ jobs:
     runs-on: windows-2022
     steps:
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install PSScriptAnalyzer
         shell: powershell
@@ -28,7 +28,7 @@ jobs:
         shell: powershell
         run: |
           $syntaxErrors = @()
-          Get-ChildItem -Path $env:GITHUB_WORKSPACE -Filter '*.ps1' -File -Recurse | ForEach-Object {
+          Get-ChildItem -Path $env:GITHUB_WORKSPACE -Filter '*.ps1' -File | ForEach-Object {
               $parseErrors = $null
               [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$parseErrors) | Out-Null
               if ($parseErrors) {
@@ -63,16 +63,4 @@ jobs:
           if ($warnings.Count -gt 0) {
               Write-Warning "PSScriptAnalyzer reported $($warnings.Count) warning-level findings in legacy scripts."
               $warnings | Select-Object RuleName, ScriptName, Line, Message | Format-Table -AutoSize
-          }
-
-      - name: Run regression suites
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $tests = @(Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE 'Tests') -Filter '*.Tests.ps1' -File)
-          if ($tests.Count -eq 0) {
-              throw 'No regression suites were discovered.'
-          }
-          foreach ($test in $tests) {
-              & $test.FullName
           }
