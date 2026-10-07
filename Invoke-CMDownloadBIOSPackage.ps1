@@ -182,7 +182,7 @@ Begin {
 		try {
 			$TSEnvironment = New-Object -ComObject "Microsoft.SMS.TSEnvironment" -ErrorAction Stop
 		} catch [System.Exception] {
-			Write-Warning -Message "Unable to construct Microsoft.SMS.TSEnvironment object"; exit
+			throw "Unable to construct Microsoft.SMS.TSEnvironment object. $($PSItem.Exception.Message)"
 		}
 	}
 
@@ -689,50 +689,28 @@ Process {
 		Write-CMLogEntry -Value " - Setting 'AdminServiceURL' variable to: $($Script:AdminServiceURL)" -Severity 1
 	}
 
-	function Install-AuthModule {
-		# Determine if the PSIntuneAuth module needs to be installed
-		try {
-			Write-CMLogEntry -Value " - Attempting to locate PSIntuneAuth module" -Severity 1
-			$PSIntuneAuthModule = Get-InstalledModule -Name "PSIntuneAuth" -ErrorAction Stop -Verbose:$false
-			if ($null -ne $PSIntuneAuthModule) {
-				Write-CMLogEntry -Value " - Authentication module detected, checking for latest version" -Severity 1
-				$LatestModuleVersion = (Find-Module -Name "PSIntuneAuth" -ErrorAction SilentlyContinue -Verbose:$false).Version
-				if ($LatestModuleVersion -gt $PSIntuneAuthModule.Version) {
-					Write-CMLogEntry -Value " - Latest version of PSIntuneAuth module is not installed, attempting to install: $($LatestModuleVersion.ToString())" -Severity 1
-					$null = Update-Module -Name "PSIntuneAuth" -Scope CurrentUser -Force -ErrorAction Stop -Confirm:$false -Verbose:$false
-				}
-			}
-		} catch [System.Exception] {
-			Write-CMLogEntry -Value " - Unable to detect PSIntuneAuth module, attempting to install from PSGallery" -Severity 2
-			try {
-				# Install NuGet package provider
-				$null = Install-PackageProvider -Name "NuGet" -Force -Verbose:$false
-
-				# Install PSIntuneAuth module
-				Install-Module -Name "PSIntuneAuth" -Scope AllUsers -Force -ErrorAction Stop -Confirm:$false -Verbose:$false
-				Write-CMLogEntry -Value " - Successfully installed PSIntuneAuth module" -Severity 1
-			} catch [System.Exception] {
-				Write-CMLogEntry -Value " - An error occurred while attempting to install PSIntuneAuth module. Error message: $($_.Exception.Message)" -Severity 3
-
-				# Throw terminating error
-				$ErrorRecord = New-TerminatingErrorRecord -Message ([string]::Empty)
-				$PSCmdlet.ThrowTerminatingError($ErrorRecord)
-			}
-		}
-	}
-
 	function Get-AuthToken {
+		$TokenRequest = $null
+		$TokenResponse = $null
 		try {
-			# Attempt to install PSIntuneAuth module, if already installed ensure the latest version is being used
-			Install-AuthModule
-
-			# Import MS Intune Auth Token
-			Write-CMLogEntry -Value " - Importing PSIntuneAuth PS module" -Severity 1
-			Import-Module -Name PSIntuneAuth
-
-			# Retrieve authentication token
+			# Retrieve OAuth directly so deployment never installs or executes a gallery module as SYSTEM.
 			Write-CMLogEntry -Value " - Attempting to retrieve authentication token using native client with ID: $($ClientID)" -Severity 1
-			$Script:AuthToken = Get-MSIntuneAuthToken -TenantName $TenantName -ClientID $ClientID -Credential $Credential -Resource $ApplicationIDURI -RedirectUri "https://login.microsoftonline.com/common/oauth2/nativeclient" -ErrorAction Stop
+			$TenantIdentifier = [Uri]::EscapeDataString($TenantName.Trim())
+			$TokenUri = "https://login.microsoftonline.com/$($TenantIdentifier)/oauth2/token"
+			$TokenRequest = @{
+				grant_type = "password"
+				client_id = $ClientID
+				resource = $ApplicationIDURI
+				username = $Credential.UserName
+				password = $Script:Password
+			}
+			$TokenResponse = Invoke-RestMethod -Method Post -Uri $TokenUri -Body $TokenRequest -ContentType "application/x-www-form-urlencoded" -ErrorAction Stop
+			if ([string]::IsNullOrWhiteSpace($TokenResponse.token_type) -or [string]::IsNullOrWhiteSpace($TokenResponse.access_token)) {
+				throw "The Microsoft identity platform response did not contain a token type and access token"
+			}
+			$Script:AuthToken = @{
+				Authorization = "$($TokenResponse.token_type) $($TokenResponse.access_token)"
+			}
 			Write-CMLogEntry -Value " - Successfully retrieved authentication token" -Severity 1
 		} catch [System.Exception] {
 			Write-CMLogEntry -Value " - Failed to retrieve authentication token. Error message: $($PSItem.Exception.Message)" -Severity 3
@@ -740,6 +718,15 @@ Process {
 			# Throw terminating error
 			$ErrorRecord = New-TerminatingErrorRecord -Message ([string]::Empty)
 			$PSCmdlet.ThrowTerminatingError($ErrorRecord)
+		} finally {
+			if ($null -ne $TokenRequest) {
+				$TokenRequest.password = $null
+			}
+			if ($null -ne $TokenResponse) {
+				$TokenResponse.access_token = $null
+			}
+			$Script:Password = $null
+			$Script:Credential = $null
 		}
 	}
 
@@ -1407,7 +1394,8 @@ Process {
 					}
 					Write-CMLogEntry -Value "A new version of the BIOS has been detected. Current release $($CurrentBIOSVersion) will be replaced by $($AvailableBIOSVersion)." -Severity 1
 				}
-			} elseif ($CurrentBIOSVersion -like "A*") {
+			} elseif ($CurrentBIOSVersion -match "^A(?<CurrentRevision>\d+)$") {
+				$CurrentRevision = [int]$Matches.CurrentRevision
 				# Compare current BIOS release to available
 				if ($AvailableBIOSVersion -like "*.*.*") {
 					# Assume that the bios is new as moving from Axx to x.x.x formats
@@ -1416,7 +1404,8 @@ Process {
 						$TSEnvironment.Value("NewBIOSAvailable") = $true
 					}
 					Write-CMLogEntry -Value "A new version of the BIOS has been detected. Current release $($CurrentBIOSVersion) will be replaced by $($AvailableBIOSVersion)." -Severity 1
-				} elseif ($AvailableBIOSVersion -gt $CurrentBIOSVersion) {
+				} elseif ($AvailableBIOSVersion -match "^A(?<AvailableRevision>\d+)$" -and
+					[int]$Matches.AvailableRevision -gt $CurrentRevision) {
 					# Write output to task sequence variable
 					if ($Script:PSCmdlet.ParameterSetName -notlike "Debug") {
 						$TSEnvironment.Value("NewBIOSAvailable") = $true

@@ -114,6 +114,37 @@ $DownloaderText = Get-Content -LiteralPath $DownloaderPath -Raw
 foreach ($Text in @($DownloaderText, $LegacyText)) {
 	Assert-Equal ($Text -match "ServerCertificateValidationCallback|Set-CertificateValidationCallback") $false "Downloaders must not bypass HTTPS certificate validation"
 }
+Assert-Equal ($DownloaderText -match "(?i)\b(Install|Update)-Module\b") $false "Downloader must not install gallery modules at runtime"
+Assert-Equal ($DownloaderText.Contains("Install-AuthModule")) $false "Legacy authentication module bootstrap must be absent"
+Assert-Equal ($DownloaderText.Contains('throw "Unable to construct Microsoft.SMS.TSEnvironment object.')) $true "Task-sequence initialization must fail closed"
+
+. ([scriptblock]::Create((Get-FunctionDefinition -ScriptPath $DownloaderPath -Name "Get-AuthToken")))
+function Invoke-RestMethod {
+	param($Method, $Uri, $Body, $ContentType, $ErrorAction)
+	$script:TokenRequest = [pscustomobject]@{
+		Method = $Method
+		Uri = $Uri
+		Body = $Body.Clone()
+		ContentType = $ContentType
+	}
+	[pscustomobject]@{ token_type = "Bearer"; access_token = "test-token" }
+}
+$TenantName = "contoso.onmicrosoft.com"
+$ClientID = "00000000-0000-0000-0000-000000000001"
+$ApplicationIDURI = "https://ConfigMgrService"
+$Script:Password = "P@ssw0rd!"
+$Credential = New-Object System.Management.Automation.PSCredential(
+	"svc-bios@contoso.com",
+	(ConvertTo-SecureString $Script:Password -AsPlainText -Force))
+Get-AuthToken
+Assert-Equal $script:TokenRequest.Uri "https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/token" "Direct OAuth endpoint"
+Assert-Equal $script:TokenRequest.Method "Post" "Direct OAuth method"
+Assert-Equal $script:TokenRequest.ContentType "application/x-www-form-urlencoded" "Direct OAuth content type"
+Assert-Equal $script:TokenRequest.Body.username "svc-bios@contoso.com" "Direct OAuth user name"
+Assert-Equal $script:TokenRequest.Body.password "P@ssw0rd!" "Direct OAuth password"
+Assert-Equal $Script:AuthToken.Authorization "Bearer test-token" "Direct OAuth authorization header"
+Assert-Equal ($null -eq $Script:Password) $true "Plain-text password is cleared"
+Assert-Equal ($null -eq $Script:Credential) $true "Credential is cleared"
 
 foreach ($FileName in @("Invoke-DellBIOSUpdate.ps1", "Invoke-HPBIOSUpdate.ps1", "Invoke-LenovoBIOSUpdate.ps1")) {
 	$Text = Get-Content -LiteralPath (Join-Path $RepositoryRoot $FileName) -Raw
