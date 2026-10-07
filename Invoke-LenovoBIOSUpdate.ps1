@@ -1,31 +1,31 @@
 <#
 .SYNOPSIS
 	Invoke Lenovo BIOS Update process.
-	
+
 .DESCRIPTION
 	This script will invoke the Lenovo BIOS update process for the executable residing in the path specified for the Path parameter.
-	
+
 	IMPORTANT: This script requires the WinPE-HTA optional component added to the boot image when used during WinPE phase.
-	
+
 .PARAMETER Path
 	Specify the path containing the WinUPTP or Flash.cmd
-	
+
 .PARAMETER Password
 	Specify the BIOS password if necessary.
-	
+
 .PARAMETER LogFileName
 	Set the name of the log file produced by the flash utility.
-	
+
 .EXAMPLE
 	.\Invoke-LenovoBIOSUpdate.ps1 -Path %OSDBIOSPackage01% -Password "BIOSPassword"
-	
+
 .NOTES
     FileName:    Invoke-LenovoBIOSUpdate.ps1
     Author:      Maurice Daly / Nickolaj Andersen
     Contact:     @modaly_it / @NickolajA
     Created:     2017-06-09
     Updated:     2019-05-14
-    
+
     Version history:
     1.0.0 - (2017-06-09) Script created
 	1.0.1 - (2017-07-05) Added additional logging, methods and variables
@@ -82,19 +82,19 @@ Process {
 		)
 		# Determine log file location
 		$LogFilePath = Join-Path -Path $LogDirectoryPath -ChildPath $FileName
-		
+
 		# Construct time stamp for log entry
 		$Time = -join @((Get-Date -Format "HH:mm:ss.fff"), "+", (Get-CimInstance -ClassName Win32_TimeZone | Select-Object -ExpandProperty Bias))
-		
+
 		# Construct date for log entry
 		$Date = (Get-Date -Format "MM-dd-yyyy")
-		
+
 		# Construct context for log entry
 		$Context = $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
-		
+
 		# Construct final log entry
 		$LogText = "<![LOG[$($Value)]LOG]!><time=""$($Time)"" date=""$($Date)"" component=""LenovoBIOSUpdate.log"" context=""$($Context)"" type=""$($Severity)"" thread=""$($PID)"" file="""">"
-		
+
 		# Add value to log file
 		try {
 			Out-File -InputObject $LogText -Append -NoClobber -Encoding Default -FilePath $LogFilePath -ErrorAction Stop
@@ -132,7 +132,7 @@ Process {
 		$Script:BitLockerSuspendedByScript = $false
 		return $true
 	}
-	
+
 	# A virtual machine has no physical firmware flash chip. The guest BIOS/UEFI is a software template
 	# owned by the hypervisor, so vendor flash utilities refuse to execute and fail the task sequence.
 	# Skip gracefully instead.
@@ -153,15 +153,15 @@ Process {
 		Write-CMLogEntry -Value "Virtual machine detected ('$($ComputerSystem.Manufacturer) $($ComputerSystem.Model)'). BIOS/UEFI firmware is managed by the hypervisor, skipping BIOS flash" -Severity 2
 		exit 0
 	}
-	
+
 	Set-Location -Path $Path
 	# Write log file for script execution
 	Write-CMLogEntry -Value "Initiating script to determine flashing capabilities for Lenovo BIOS updates" -Severity 1
-	
+
 	# Check for required DLL's
 	if ((Test-Path -Path (Join-Path -Path $Path -ChildPath "OLEDLG.dll")) -eq $False) {
 		Write-CMLogEntry -Value "Copying OLEDLG.dll to $($Path) directory" -Severity 1
-		
+
 		# Build an ordered list of candidate source locations. Previously the OSDisk branch was an
 		# independent if-statement, so when OSDisk was populated but did not contain the DLL the
 		# remaining fallbacks were never evaluated and the missing DLL went unreported.
@@ -172,7 +172,7 @@ Process {
 		foreach ($DriveLetter in @("C:", "D:", "X:")) {
 			$OLEDLGCandidates.Add("$($DriveLetter)\Windows\System32\OLEDLG.dll") | Out-Null
 		}
-		
+
 		$OLEDLGSource = $OLEDLGCandidates | Where-Object { Test-Path -Path $_ } | Select-Object -First 1
 		if (-not([string]::IsNullOrEmpty($OLEDLGSource))) {
 			Copy-Item -Path $OLEDLGSource -Destination "$($Path)\OLEDLG.dll"
@@ -181,7 +181,7 @@ Process {
 			Write-CMLogEntry -Value "Failed to copy DLL file. Aborting update process" -Severity 3; exit 1
 		}
 	}
-	
+
 	# WinUPTP bios upgrade utility file name
 	# NOTE: -First 1 is required, a recursive search can return multiple matches which would
 	# otherwise produce an array and corrupt the -FilePath argument passed to Start-Process.
@@ -191,7 +191,7 @@ Process {
 	else {
 		$WinUPTPUtility = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "WinUPTP.exe" } | Select-Object -First 1 -ExpandProperty FullName
 	}
-	
+
 	# Flash CMD upgrade utility file name
 	if (([Environment]::Is64BitOperatingSystem) -eq $true) {
 		$FlashCMDUtility = Get-ChildItem -Path $Path -Filter "*.cmd" -Recurse | Where-Object { $_.Name -like "Flash64.cmd" } | Select-Object -First 1 -ExpandProperty FullName
@@ -199,7 +199,7 @@ Process {
 	else {
 		$FlashCMDUtility = Get-ChildItem -Path $Path -Filter "*.cmd" -Recurse | Where-Object { $_.Name -like "Flash.cmd" } | Select-Object -First 1 -ExpandProperty FullName
 	}
-	
+
 	# Select a single update method. These were previously two independent if-statements, which meant
 	# that a package shipping both utilities would silently fall through to Flash.cmd while having
 	# already logged that WinUPTP would be used.
@@ -215,11 +215,11 @@ Process {
 		$FlashSwitches = " /quiet /sccm /ign"
 		$FlashUtility = $FlashCMDUtility
 	}
-	
+
 	if (-not($FlashUtility)) {
 		Write-CMLogEntry -Value "Supported upgrade utility was not found." -Severity 3; exit 1
 	}
-	
+
 	if (-not([System.String]::IsNullOrEmpty($Password))) {
 		# Add password to the flash bios switches
 		$FlashSwitches = $FlashSwitches + " /pass:$($Password)"
@@ -230,20 +230,20 @@ Process {
 	else {
 		Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches)" -Severity 1
 	}
-	
+
 	# Set log file location
 	$LogFilePath = Join-Path -Path $LogDirectoryPath -ChildPath $LogFileName
-	
+
 	if (($TSEnvironment -ne $null) -and ($TSEnvironment.Value("_SMSTSinWinPE") -eq $true)) {
 		try {
 			# Start flash update process
 			Write-CMLogEntry -Value "Running Flash Update - $($FlashUtility)" -Severity 1
 			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList "$FlashSwitches" -Passthru -Wait -ErrorAction Stop
 			$FlashExitCode = $FlashProcess.ExitCode
-			
+
 			# Output Exit Code for testing purposes
 			$FlashExitCode | Out-File -FilePath $LogFilePath
-			
+
 			# Get winuptp.log file. Scoped to the package path and limited to the first match, since
 			# multiple results would previously be passed to Copy-Item as an array.
 			$WinUPTPLog = Get-ChildItem -Path $Path -Filter "winuptp.log" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
@@ -252,7 +252,7 @@ Process {
 				$SMSTSLogPath = Join-Path -Path $LogDirectoryPath -ChildPath "winuptp.log"
 				Copy-Item -Path $WinUPTPLog -Destination $SMSTSLogPath -Force -ErrorAction SilentlyContinue
 			}
-			
+
 			# Evaluate the exit code. Previously it was only written to a file and never acted upon,
 			# so a failed flash would still report the step as successful.
 			switch ($FlashExitCode) {
@@ -291,7 +291,7 @@ Process {
 		}
 		$OSVolume = $OSVolumes[0]
 		$OSVolumeEncrypted = $OSVolume.ProtectionStatus -eq 1
-		
+
 		# Suspend BitLocker if the operating system volume is protected
 		if ($OSVolumeEncrypted -eq $true) {
 			Write-CMLogEntry -Value "Suspending BitLocker protected volume: $($env:SystemDrive)" -Severity 1
@@ -300,7 +300,7 @@ Process {
 				Write-CMLogEntry -Value "Failed to suspend BitLocker protection on volume $($env:SystemDrive). Manage-Bde returned exit code $($LASTEXITCODE)." -Severity 3; exit 1
 			}
 			$Script:BitLockerSuspendedByScript = $true
-			
+
 			# Verify that protection was actually suspended before flashing, a failed suspension
 			# combined with a BIOS update can leave the device requiring the recovery key
 			try {
@@ -317,16 +317,16 @@ Process {
 				exit 1
 			}
 		}
-		
+
 		# Start BIOS update process
 		try {
 			Write-CMLogEntry -Value "Running Flash Update - $($FlashUtility)" -Severity 1
 			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList "$($FlashSwitches)" -Passthru -Wait -ErrorAction Stop
 			$FlashExitCode = $FlashProcess.ExitCode
-			
+
 			# Output Exit Code for testing purposes
 			$FlashExitCode | Out-File -FilePath $LogFilePath
-			
+
 			# Evaluate the exit code instead of assuming success
 			switch ($FlashExitCode) {
 				0 {

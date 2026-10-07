@@ -1,50 +1,50 @@
 <#
 .SYNOPSIS
 	Download BIOS package (regular package) matching computer model and manufacturer.
-	
+
 .DESCRIPTION
     This script will determine the model of the computer and manufacturer and then query the specified endpoint
     for ConfigMgr WebService for a list of Packages. It then sets the OSDDownloadDownloadPackages variable to include
     the PackageID property of a package matching the computer model. If multiple packages are detect, it will select
 	most current one by the creation date of the packages.
-	
+
 .PARAMETER URI
 	Set the URI for the ConfigMgr WebService.
-	
+
 .PARAMETER SecretKey
 	Specify the known secret key for the ConfigMgr WebService.
-	
+
 .PARAMETER Filter
 	Define a filter used when calling ConfigMgr WebService to only return objects matching the filter.
-	
+
 .EXAMPLE
     # Production BIOS Packages
 	# Detect, download and apply an available BIOS update during OS deployment with ConfigMgr (Default):
 	.\Invoke-CMDownloadBIOSPackage.ps1 -URI "http://CM01.domain.com/ConfigMgrWebService/ConfigMgr.asmx" -SecretKey "12345" -Filter "BIOS"
-   
+
 	# Detect, download and apply an available BIOS update during OS upgrade for an existing operating system using ConfigMgr:
-	.\Invoke-CMDownloadBIOSPackage.ps1 -URI "http://CM01.domain.com/ConfigMgrWebService/ConfigMgr.asmx" -SecretKey "12345" -Filter "BIOS" -DeploymentType BIOSUpdate    
+	.\Invoke-CMDownloadBIOSPackage.ps1 -URI "http://CM01.domain.com/ConfigMgrWebService/ConfigMgr.asmx" -SecretKey "12345" -Filter "BIOS" -DeploymentType BIOSUpdate
 
 	# Piloting BIOS Packages (Using version 5.0.0 of the Driver Automation Tool and onwards)
 	# Detect, download and apply an available BIOS update during OS deployment with ConfigMgr (Default):
 	.\Invoke-CMDownloadBIOSPackage.ps1 -URI "http://CM01.domain.com/ConfigMgrWebService/ConfigMgr.asmx" -SecretKey "12345" -Filter "BIOS Update Pilot"
-	
+
 .NOTES
     FileName:    Invoke-CMDownloadBIOSPackage.ps1
     Author:      Nickolaj Andersen & Maurice Daly
     Contact:     @NickolajA / @modaly_it
     Created:     2017-05-22
     Updated:     2019-11-25
-    
+
     Version history:
-    1.0.0 - (2017-05-22) Script created 
-    1.0.1 - (2017-07-07) Updated with BIOS revision checker. Initially used for Dell systems 
-    1.0.2 - (2017-07-13) Updated with support for downloading BIOS packages for Lenovo models 
-    1.0.3 - (2017-07-19) Updated with additional condition for matching Lenovo models 
-    1.0.4 - (2017-07-27) Updated with additional logic for matching based on description for Lenovo models and version checking update for Lenovo using the release date value 
+    1.0.0 - (2017-05-22) Script created
+    1.0.1 - (2017-07-07) Updated with BIOS revision checker. Initially used for Dell systems
+    1.0.2 - (2017-07-13) Updated with support for downloading BIOS packages for Lenovo models
+    1.0.3 - (2017-07-19) Updated with additional condition for matching Lenovo models
+    1.0.4 - (2017-07-27) Updated with additional logic for matching based on description for Lenovo models and version checking update for Lenovo using the release date value
 	1.0.5 - (2017-10-09) Updated script to support downloading the BIOS package upon a match being found and set the OSDBIOSPackage variable
-	2.0.0 - (2018-01-10) Updates for running script in the Full OS and other minor tweaks 
-	2.0.1 - (2018-02-06) Fix for Hewlett Packard 
+	2.0.0 - (2018-01-10) Updates for running script in the Full OS and other minor tweaks
+	2.0.1 - (2018-02-06) Fix for Hewlett Packard
 	2.0.2 - (2018-03-13) Added version info in the log file and output of SKU value for troubleshooting purposes
 	2.0.3 - (2018-04-06) Updated log function with Out-File instead of Add-Content cmdlet
 	2.0.4 - (2018-04-09) Minor code fixes
@@ -59,7 +59,7 @@
 	2.1.1 - (2019-05-14) Updated the script to correctly handling computer models that contains '-' in the model name
 	2.1.2 - (2019-07-22) Updated to support Microsoft Surface devices
 	2.1.3 - (2019-11-25) Removed the OSUpgrade deployment type as it was not used within this script
-	2.1.4 - (2019-12-02) Updated Microsoft Surface logic as firmware will be contained within the driver package for new packages with DAT 6.4.0 
+	2.1.4 - (2019-12-02) Updated Microsoft Surface logic as firmware will be contained within the driver package for new packages with DAT 6.4.0
 #>
 [CmdletBinding()]
 param (
@@ -78,7 +78,7 @@ param (
 	[parameter(Mandatory = $false, HelpMessage = "Define a filter used when calling ConfigMgr WebService to only return objects matching the filter.")]
 	[ValidateNotNullOrEmpty()]
 	[string]$Filter = [System.String]::Empty,
-	
+
 	[parameter(Mandatory = $false, ParameterSetName = "Debug", HelpMessage = "Use this switch when running script outside of a Task Sequence.")]
 	[switch]$DebugMode
 )
@@ -128,19 +128,19 @@ Process {
 		)
 		# Determine log file location
 		$LogFilePath = Join-Path -Path $LogsDirectory -ChildPath $FileName
-		
+
 		# Construct time stamp for log entry
 		$Time = -join @((Get-Date -Format "HH:mm:ss.fff"), "+", (Get-CimInstance -ClassName Win32_TimeZone | Select-Object -ExpandProperty Bias))
-		
+
 		# Construct date for log entry
 		$Date = (Get-Date -Format "MM-dd-yyyy")
-		
+
 		# Construct context for log entry
 		$Context = $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
-		
+
 		# Construct final log entry
 		$LogText = "<![LOG[$($Value)]LOG]!><time=""$($Time)"" date=""$($Date)"" component=""ApplyBIOSPackage"" context=""$($Context)"" type=""$($Severity)"" thread=""$($PID)"" file="""">"
-		
+
 		# Add value to log file
 		try {
 			Out-File -InputObject $LogText -Append -NoClobber -Encoding Default -FilePath $LogFilePath -ErrorAction Stop
@@ -149,7 +149,7 @@ Process {
 			Write-Warning -Message "Unable to append log entry to ApplyBIOSPackage.log file. Error message at line $($_.InvocationInfo.ScriptLineNumber): $($_.Exception.Message)"
 		}
 	}
-	
+
 	function Invoke-Executable {
 		param (
 			[parameter(Mandatory = $true, HelpMessage = "Specify the file name or path of the executable to be invoked, including the extension")]
@@ -159,7 +159,7 @@ Process {
 			[ValidateNotNull()]
 			[string]$Arguments
 		)
-		
+
 		# Construct a hash-table for default parameter splatting
 		$SplatArgs = @{
 			FilePath = $FilePath
@@ -167,12 +167,12 @@ Process {
 			Passthru = $true
 			ErrorAction	= "Stop"
 		}
-		
+
 		# Add ArgumentList param if present
 		if (-not ([System.String]::IsNullOrEmpty($Arguments))) {
 			$SplatArgs.Add("ArgumentList", $Arguments)
 		}
-		
+
 		# Invoke executable and wait for process to exit
 		try {
 			$Invocation = Start-Process @SplatArgs
@@ -182,10 +182,10 @@ Process {
 		catch [System.Exception] {
 			Write-Warning -Message $_.Exception.Message; break
 		}
-		
+
 		return $Invocation.ExitCode
 	}
-	
+
 	function Invoke-CMDownloadContent {
 		param (
 			[parameter(Mandatory = $true, ParameterSetName = "NoPath", HelpMessage = "Specify a PackageID that will be downloaded.")]
@@ -209,25 +209,25 @@ Process {
 		# Set OSDDownloadDownloadPackages
 		Write-CMLogEntry -Value "Setting task sequence variable OSDDownloadDownloadPackages to: $($PackageID)" -Severity 1
 		$TSEnvironment.Value("OSDDownloadDownloadPackages") = "$($PackageID)"
-		
+
 		# Set OSDDownloadDestinationLocationType
 		Write-CMLogEntry -Value "Setting task sequence variable OSDDownloadDestinationLocationType to: $($DestinationLocationType)" -Severity 1
 		$TSEnvironment.Value("OSDDownloadDestinationLocationType") = "$($DestinationLocationType)"
-		
+
 		# Set OSDDownloadDestinationVariable
 		Write-CMLogEntry -Value "Setting task sequence variable OSDDownloadDestinationVariable to: $($DestinationVariableName)" -Severity 1
 		$TSEnvironment.Value("OSDDownloadDestinationVariable") = "$($DestinationVariableName)"
-		
+
 		# Set OSDDownloadDestinationPath
 		if ($DestinationLocationType -like "Custom") {
 			Write-CMLogEntry -Value "Setting task sequence variable OSDDownloadDestinationPath to: $($CustomLocationPath)" -Severity 1
 			$TSEnvironment.Value("OSDDownloadDestinationPath") = "$($CustomLocationPath)"
 		}
-		
+
 		# Invoke download of package content
 		try {
 			Write-CMLogEntry -Value "Starting package content download process, this might take some time" -Severity 1
-			
+
 			if (Test-Path -Path "C:\Windows\CCM\OSDDownloadContent.exe") {
 				Write-CMLogEntry -Value "Starting package content download process (FullOS), this might take some time" -Severity 1
 				$ReturnCode = Invoke-Executable -FilePath "C:\Windows\CCM\OSDDownloadContent.exe"
@@ -236,7 +236,7 @@ Process {
 				Write-CMLogEntry -Value "Starting package content download process (WinPE), this might take some time" -Severity 1
 				$ReturnCode = Invoke-Executable -FilePath "OSDDownloadContent.exe"
 			}
-			
+
 			# Match on return code
 			if ($ReturnCode -eq 0) {
 				Write-CMLogEntry -Value "Successfully downloaded package content with PackageID: $($PackageID)" -Severity 1
@@ -248,28 +248,28 @@ Process {
 		catch [System.Exception] {
 			Write-CMLogEntry -Value "An error occurred while attempting to download package content. Error message: $($_.Exception.Message)" -Severity 3; exit 12
 		}
-		
+
 		return $ReturnCode
 	}
-	
+
 	function Invoke-CMResetDownloadContentVariables {
 		# Set OSDDownloadDownloadPackages
 		Write-CMLogEntry -Value "Setting task sequence variable OSDDownloadDownloadPackages to a blank value" -Severity 1
 		$TSEnvironment.Value("OSDDownloadDownloadPackages") = [System.String]::Empty
-		
+
 		# Set OSDDownloadDestinationLocationType
 		Write-CMLogEntry -Value "Setting task sequence variable OSDDownloadDestinationLocationType to a blank value" -Severity 1
 		$TSEnvironment.Value("OSDDownloadDestinationLocationType") = [System.String]::Empty
-		
+
 		# Set OSDDownloadDestinationVariable
 		Write-CMLogEntry -Value "Setting task sequence variable OSDDownloadDestinationVariable to a blank value" -Severity 1
 		$TSEnvironment.Value("OSDDownloadDestinationVariable") = [System.String]::Empty
-		
+
 		# Set OSDDownloadDestinationPath
 		Write-CMLogEntry -Value "Setting task sequence variable OSDDownloadDestinationPath to a blank value" -Severity 1
 		$TSEnvironment.Value("OSDDownloadDestinationPath") = [System.String]::Empty
 	}
-	
+
 	function Compare-BIOSVersion {
 		param (
 			[parameter(Mandatory = $false, HelpMessage = "Current available BIOS version.")]
@@ -281,21 +281,21 @@ Process {
 			[ValidateNotNullOrEmpty()]
 			[string]$ComputerManufacturer
 		)
-		
+
 		if ($ComputerManufacturer -match "Dell") {
 			# Obtain current BIOS release
 			$CurrentBIOSVersion = (Get-CimInstance -ClassName Win32_BIOS | Select-Object -ExpandProperty SMBIOSBIOSVersion).Trim()
 			Write-CMLogEntry -Value "Current BIOS release detected as $($CurrentBIOSVersion)." -Severity 1
 			Write-CMLogEntry -Value "Available BIOS release deteced as $($AvailableBIOSVersion)." -Severity 1
-			
-			# Determine Dell BIOS revision format			
+
+			# Determine Dell BIOS revision format
 			if ($CurrentBIOSVersion -like "*.*.*") {
 				# Compare current BIOS release to available
 				if ([System.Version]$AvailableBIOSVersion -gt [System.Version]$CurrentBIOSVersion) {
 					# Write output to task sequence variable
 					if ($DebugMode -ne $true) {
 						$TSEnvironment.Value("NewBIOSAvailable") = $true
-					}					
+					}
 					Write-CMLogEntry -Value "A new version of the BIOS has been detected. Current release $($CurrentBIOSVersion) will be replaced by $($AvailableBIOSVersion)." -Severity 1
 				}
 			}
@@ -318,13 +318,13 @@ Process {
 				}
 			}
 		}
-		
+
 		if ($ComputerManufacturer -match "Lenovo") {
 			# Obtain current BIOS release
 			$CurrentBIOSReleaseDate = (Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop).ReleaseDate.ToString("yyyyMMdd", [System.Globalization.CultureInfo]::InvariantCulture)
 			Write-CMLogEntry -Value "Current BIOS release date detected as $($CurrentBIOSReleaseDate)." -Severity 1
 			Write-CMLogEntry -Value "Available BIOS release date detected as $($AvailableBIOSReleaseDate)." -Severity 1
-			
+
 			# Compare current BIOS release to available
 			if ($AvailableBIOSReleaseDate -gt $CurrentBIOSReleaseDate) {
 				# Write output to task sequence variable
@@ -334,7 +334,7 @@ Process {
 				Write-CMLogEntry -Value "A new version of the BIOS has been detected. Current date release dated $($CurrentBIOSReleaseDate) will be replaced by release $($AvailableBIOSReleaseDate)." -Severity 1
 			}
 		}
-		
+
 		if ($ComputerManufacturer -match "Hewlett-Packard") {
 			# Obtain current BIOS release
 			$CurrentBIOSProperties = (Get-CimInstance -ClassName Win32_BIOS | Select-Object -Property *)
@@ -364,7 +364,7 @@ Process {
 			# Output version details
 			Write-CMLogEntry -Value "Current BIOS release detected as $($CurrentBIOSVersion)." -Severity 1
 			Write-CMLogEntry -Value "Available BIOS release detected as $($AvailableBIOSVersion)." -Severity 1
-			
+
 			# Compare current BIOS release to available
 			switch ($BIOSVersionParseable) {
 				$true {
@@ -388,15 +388,15 @@ Process {
 			}
 		}
 	}
-	
+
 	# Write log file for script execution
 	Write-CMLogEntry -Value "SCConfigMgr Invoke-CMDownloadBIOSPackage Version $($ScriptVersion)" -Severity 1
 	Write-CMLogEntry -Value "BIOS download package process initiated" -Severity 1
-	
+
 	# Determine manufacturer
 	$ComputerManufacturer = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Manufacturer).Trim()
 	Write-CMLogEntry -Value "Manufacturer determined as: $($ComputerManufacturer)" -Severity 1
-	
+
 	# Determine manufacturer name and hardware information
 	switch -Wildcard ($ComputerManufacturer) {
 		"*Microsoft*" {
@@ -427,14 +427,14 @@ Process {
 	}
 	Write-CMLogEntry -Value "Computer model determined as: $($ComputerModel)" -Severity 1
 	Write-CMLogEntry -Value "Computer SKU determined as: $($SystemSKU)" -Severity 1
-	
+
 	# Supported Manufacturer Array
 	$Manufacturers = @("Dell", "Hewlett-Packard", "Lenovo","Microsoft")
-	
+
 	# Get existing BIOS version
 	$CurrentBIOSVersion = (Get-CimInstance -ClassName Win32_BIOS | Select-Object -ExpandProperty SMBIOSBIOSVersion).Trim()
 	Write-CMLogEntry -Value "Current BIOS version determined as: $($CurrentBIOSVersion)" -Severity 1
-	
+
 	# Construct new web service proxy
 	try {
 		$WebService = New-WebServiceProxy -Uri $URI -ErrorAction Stop
@@ -442,7 +442,7 @@ Process {
 	catch [System.Exception] {
 		Write-CMLogEntry -Value "Unable to establish a connection to ConfigMgr WebService. Error message: $($_.Exception.Message)" -Severity 3; exit 1
 	}
-	
+
 	# Call web service for a list of packages
 	try {
 		if ($ComputerManufacturer -match "Microsoft"){
@@ -455,17 +455,17 @@ Process {
 	catch [System.Exception] {
 		Write-CMLogEntry -Value "An error occured while calling ConfigMgr WebService for a list of available packages. Error message: $($_.Exception.Message)" -Severity 3; exit 1
 	}
-	
+
 	# Construct array list for matching packages
 	$PackageList = New-Object -TypeName System.Collections.ArrayList
-	
+
 	# Set script error preference variable
 	$ErrorActionPreference = "Stop"
-	
+
 	# Validate supported system was detected
 	# Validate not virtual machine
 	$ComputerSystemType = Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty "Model"
-	
+
 	if ($ComputerSystemType -notin @("Virtual Machine", "VMware Virtual Platform", "VMware7,1", "VMware20,1", "VMware Virtual Platform None", "VirtualBox", "HVM domU", "KVM", "QEMU Virtual Machine", "Standard PC (Q35 + ICH9, 2009)", "Standard PC (i440FX + PIIX, 1996)", "Parallels Virtual Platform", "Google Compute Engine", "AHV")) {
 		# Process packages returned from web service
 		if ($Packages -ne $null) {
@@ -481,11 +481,11 @@ Process {
 					Write-CMLogEntry -Value "Computer detection method set to use SystemSKU" -Severity 1
 					$ComputerDetectionMethod = "SystemSKU"
 				}
-				
+
 				# Add packages with matching criteria to list
 				foreach ($Package in $Packages) {
 					Write-CMLogEntry -Value "Attempting to find a match for BIOS package: $($Package.PackageName) ($($Package.PackageID))" -Severity 1
-					
+
 					# Computer detection method matching
 					$ComputerDetectionResult = $false
 					switch ($ComputerManufacturer) {
@@ -517,7 +517,7 @@ Process {
 							}
 						}
 					}
-					
+
 					if ($ComputerDetectionResult -eq $true)  {
 						# Match model, manufacturer criteria
 						if ($Manufacturers -contains $ComputerManufacturer) {
@@ -532,13 +532,13 @@ Process {
 					}
 
 				}
-				
+
 				# Process matching items in package list and set task sequence variable
 				if ($PackageList.Count -ge 1) {
 					# Determine the most current package from list
 					if ($PackageList.Count -eq 1) {
 						Write-CMLogEntry -Value "BIOS package list contains a single match, attempting to set task sequence variable" -Severity 1
-						
+
 						# Check if BIOS package is newer than currently installed
 						if ($ComputerManufacturer -match "Dell") {
 							Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].PackageVersion -ComputerManufacturer $ComputerManufacturer
@@ -552,10 +552,10 @@ Process {
 						elseif ($ComputerManufacturer -match "Microsoft") {
 							$NewBIOSAvailable = $true
 						}
-						
+
 						if (-not ($PSBoundParameters["DebugMode"])) {
 							if ($TSEnvironment.Value("NewBIOSAvailable") -eq $true) {
-								
+
 								# Attempt to download BIOS package content
 								$DownloadInvocation = Invoke-CMDownloadContent -PackageID $($PackageList[0].PackageID) -DestinationLocationType Custom -DestinationVariableName "OSDBIOSPackage" -CustomLocationPath "%_SMSTSMDataPath%\BIOSPackage"
 								try {
@@ -578,7 +578,7 @@ Process {
 					}
 					elseif ($PackageList.Count -ge 2) {
 						Write-CMLogEntry -Value "BIOS package list contains multiple matches, attempting to set task sequence variable" -Severity 1
-						
+
 						# Determine the latest BIOS package by creation date
 						if ($ComputerManufacturer -match "Dell") {
 							$PackageList = $PackageList | Sort-Object -Property PackageCreated -Descending | Select-Object -First 1
@@ -589,7 +589,7 @@ Process {
 							$PackageList = $PackageList | Where-object {
 								($_.PackageName -like "*$ComputerDescription") -and ($_.PackageManufacturer -match $ComputerManufacturer)
 							} | Sort-object -Property PackageVersion -Descending | Select-Object -First 1
-							
+
 							If ($PackageList -eq $null) {
 								# Fall back to select the latest model type match if no model name match is found
 								$PackageList = $PackageList | Sort-object -Property PackageVersion -Descending | Select-Object -First 1
@@ -617,11 +617,11 @@ Process {
 							elseif ($ComputerManufacturer -match "Microsoft") {
 								$NewBIOSAvailable = $true
 							}
-							
+
 							if (-not ($PSBoundParameters["DebugMode"])) {
 								if ($TSEnvironment.Value("NewBIOSAvailable") -eq $true) {
 									$DownloadInvocation = Invoke-CMDownloadContent -PackageID $($PackageList[0].PackageID) -DestinationLocationType Custom -DestinationVariableName "OSDBIOSPackage" -CustomLocationPath "%_SMSTSMDataPath%\BIOSPackage"
-									
+
 									try {
 										# Check for successful package download
 										if ($DownloadInvocation -eq 0) {

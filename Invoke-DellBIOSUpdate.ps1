@@ -26,7 +26,7 @@
     Contact:     @modaly_it
     Created:     2017-05-30
     Updated:     2019-05-14
-    
+
     Version history:
     1.0.0 - (2017-05-30) Script created (Maurice Daly)
 	1.0.1 - (2017-06-01) Additional checks for both in OSD and normal OS environments (Maurice Daly)
@@ -105,10 +105,10 @@ Process {
 
         # Construct final log entry
         $LogText = "<![LOG[$($Value)]LOG]!><time=""$($Time)"" date=""$($Date)"" component=""DellBIOSUpdate.log"" context=""$($Context)"" type=""$($Severity)"" thread=""$($PID)"" file="""">"
-	
+
 	    # Add value to log file
         try {
-	        Out-File -InputObject $LogText -Append -NoClobber -Encoding Default -FilePath $LogFilePath -ErrorAction Stop 
+	        Out-File -InputObject $LogText -Append -NoClobber -Encoding Default -FilePath $LogFilePath -ErrorAction Stop
         }
         catch [System.Exception] {
             Write-Warning -Message "Unable to append log entry to Invoke-DellBIOSUpdate.log file. Error message: $($_.Exception.Message)"
@@ -221,7 +221,7 @@ Process {
 		}
 		return $Result
 	}
-	
+
 	# A virtual machine has no physical firmware flash chip. The guest BIOS/UEFI is a software template
 	# owned by the hypervisor, so Dell Update Packages refuse to execute and return exit code 5
 	# (QUAL_HARD_ERROR), which would fail the task sequence. Skip gracefully instead.
@@ -242,13 +242,13 @@ Process {
 		Write-CMLogEntry -Value "Virtual machine detected ('$($ComputerSystem.Manufacturer) $($ComputerSystem.Model)'). BIOS/UEFI firmware is managed by the hypervisor, skipping BIOS flash" -Severity 2
 		exit 0
 	}
-	
+
 	# Default to task sequence variable set in detection script
 	if (($null -ne $TSEnvironment) -and (-not([string]::IsNullOrEmpty($TSEnvironment.Value("OSDBIOSPackage01"))))) {
 		Write-CMLogEntry -Value "Using BIOS package location set in OSDBIOSPackage01 TS variable" -Severity 1
 		$Path = $TSEnvironment.Value("OSDBIOSPackage01")
 	}
-	
+
 	# Run BIOS update process if BIOS package exists
 	if (-not([string]::IsNullOrEmpty($Path))){
 
@@ -266,7 +266,7 @@ Process {
 				Write-CMLogEntry -Value "Multiple BIOS update executables were found in the package, unable to determine which one to use. Files found: $($CurrentBIOSFileItems -join ", ")" -Severity 3; exit 1
 			}
 			$CurrentBIOSFile = $CurrentBIOSFileItems | Select-Object -First 1
-			Write-CMLogEntry -Value "Attempting to use BIOS update file: $($CurrentBIOSFile)" -Severity 1	
+			Write-CMLogEntry -Value "Attempting to use BIOS update file: $($CurrentBIOSFile)" -Severity 1
 
 			if ($CurrentBIOSFile -ne $null) {
 				# Set log file location
@@ -280,7 +280,7 @@ Process {
 					if (-not([System.String]::IsNullOrEmpty($Password))) {
 						$FlashSwitches = $FlashSwitches + " /p=$($Password)"
 					}
-				}	
+				}
 
 				if ($NoVideo.IsPresent) {
 					$FlashSwitches = $FlashSwitches + " /novideo"
@@ -298,7 +298,7 @@ Process {
 							Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches)" -Severity 1
 						}
 						$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -Passthru -Wait -ErrorAction Stop
-						
+
 						Write-CMLogEntry -Value "Flash utility exit code: $($FlashProcess.ExitCode)" -Severity 1
 
 						# Evaluate documented DUP codes as integers. Regex matching such as "0|2" would also accept 10, 12, 20 and 120.
@@ -306,7 +306,7 @@ Process {
 						if ($ExitCodeResult -ne 0) {
 							exit $ExitCodeResult
 						}
-						
+
 					}
 					catch [System.Exception] {
 						Write-CMLogEntry -Value "An error occured while updating the system BIOS during OS offline phase. Error message: $($_.Exception.Message)" -Severity 3 ; exit 1
@@ -317,7 +317,7 @@ Process {
 					# Used in a later section of the task sequence (after Setup Windows and ConfigMgr step)
 
 					Write-CMLogEntry -Value "Current environment is determined as FullOS" -Severity 1
-					
+
 					# Detect BitLocker status through CIM instead of parsing localized Manage-Bde output
 					$OSVolumeEncypted = $false
 					try {
@@ -331,7 +331,7 @@ Process {
 					}
 					$OSVolume = $OSVolumes[0]
 					$OSVolumeEncypted = $OSVolume.ProtectionStatus -eq 1
-					
+
 					# Supend Bitlocker if $OSVolumeEncypted is $true, remember to re-enable BitLocker after the flashing has occurred
 					if ($OSVolumeEncypted -eq $true) {
 						Write-CMLogEntry -Value "Suspending BitLocker protected volume: $($env:SystemDrive)" -Severity 1
@@ -356,7 +356,7 @@ Process {
 							exit 1
 						}
 					}
-					
+
 					# Start BIOS update process
 					try {
 						if (([Environment]::Is64BitOperatingSystem) -eq $true) {
@@ -399,7 +399,7 @@ Process {
 							$FileUpdate = Start-Process -FilePath $CurrentBIOSFile -ArgumentList $FileSwitches -PassThru -Wait -ErrorAction Stop
 							$FlashExitCode = $FileUpdate.ExitCode
 						}
-						
+
 					}
 					catch [System.Exception] {
 						Write-CMLogEntry -Value "An error occured while updating the system BIOS in OS online phase. Error message: $($_.Exception.Message)" -Severity 3

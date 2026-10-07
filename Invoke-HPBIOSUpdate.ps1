@@ -29,7 +29,7 @@
 	1.0.4 - (2019-05-14) Handle $PasswordBin to check if empty string or null instead of just null value
 	1.0.5 - (2019-05-14) Fixed an issue where the flash utility would look in the script executing location instead of the passed $Path location for the update file
 	1.0.6 - (2020-02-06) Previous "fix" in 1.0.5 was a mistake, this version corrects it
-	1.0.7 - (2020-04-23) Added additional logging output when flash utility is being executed including exit code. Removed the LogFileName parameter as the 
+	1.0.7 - (2020-04-23) Added additional logging output when flash utility is being executed including exit code. Removed the LogFileName parameter as the
 			   	         exit code from the flash utility is now embedded in the Invoke-HPBIOSUpdate.log file.
 #>
 
@@ -43,14 +43,14 @@ param(
 	[ValidateNotNullOrEmpty()]
 	[string]$PasswordBin
 )
-Begin {	
+Begin {
 	# Load Microsoft.SMS.TSEnvironment COM object
 	try {
 		$TSEnvironment = New-Object -ComObject Microsoft.SMS.TSEnvironment -ErrorAction Stop
 	}
 	catch [System.Exception] {
 		Write-Warning -Message "Unable to construct Microsoft.SMS.TSEnvironment object"
-	}	
+	}
 }
 Process {
 	$LogsDirectory = Join-Path -Path $env:SystemRoot -ChildPath "Temp"
@@ -60,7 +60,7 @@ Process {
 	}
 
 	# Functions
-	function Write-CMLogEntry {	
+	function Write-CMLogEntry {
 		param (
 			[parameter(Mandatory = $true, HelpMessage = "Value added to the log file.")]
 			[ValidateNotNullOrEmpty()]
@@ -73,18 +73,18 @@ Process {
 
 			[parameter(Mandatory = $false, HelpMessage = "Name of the log file that the entry will written to.")]
 			[ValidateNotNullOrEmpty()]
-			[string]$FileName = "Invoke-HPBIOSUpdate.log"	
+			[string]$FileName = "Invoke-HPBIOSUpdate.log"
 		)
-		
+
 		# Determine log file location
 		$LogFilePath = Join-Path -Path $LogDirectoryPath -ChildPath $FileName
-		
+
 		# Construct time stamp for log entry
 		$Time = -join @((Get-Date -Format "HH:mm:ss.fff"), "+", (Get-CimInstance -ClassName Win32_TimeZone | Select-Object -ExpandProperty Bias))
 
 		# Construct date for log entry
 		$Date = (Get-Date -Format "MM-dd-yyyy")
-		
+
 		# Construct context for log entry
 		$Context = $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
 
@@ -93,8 +93,8 @@ Process {
 
 		# Add value to log file
 		try {
-			Out-File -InputObject $LogText -Append -NoClobber -Encoding Default -FilePath $LogFilePath -ErrorAction Stop 
-		}		
+			Out-File -InputObject $LogText -Append -NoClobber -Encoding Default -FilePath $LogFilePath -ErrorAction Stop
+		}
 
 		catch [System.Exception] {
 			Write-Warning -Message "Unable to append log entry to Invoke-HPBIOSUpdate.log file. Error message: $($_.Exception.Message)"
@@ -128,7 +128,7 @@ Process {
 		$Script:BitLockerSuspendedByScript = $false
 		return $true
 	}
-	
+
 	# A virtual machine has no physical firmware flash chip. The guest BIOS/UEFI is a software template
 	# owned by the hypervisor, so vendor flash utilities refuse to execute and fail the task sequence.
 	# Skip gracefully instead.
@@ -149,20 +149,20 @@ Process {
 		Write-CMLogEntry -Value "Virtual machine detected ('$($ComputerSystem.Manufacturer) $($ComputerSystem.Model)'). BIOS/UEFI firmware is managed by the hypervisor, skipping BIOS flash" -Severity 2
 		exit 0
 	}
-	
-	# Change working directory to path containing BIOS files	
-	Set-Location -Path $Path	
+
+	# Change working directory to path containing BIOS files
+	Set-Location -Path $Path
 	Write-CMLogEntry -Value "Working directory set as $($Path)" -Severity 1
 
-	# Write log file for script execution	
+	# Write log file for script execution
 	Write-CMLogEntry -Value "Initiating script to determine flashing capabilities for HP BIOS updates" -Severity 1
-	
+
 	# Attempt to detect HPBIOSUPDREC utility file name
 	if (([Environment]::Is64BitOperatingSystem) -eq $true) {
-		$HPBIOSUPDUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPBIOSUPDREC64.exe" } | Select-Object -First 1 -ExpandProperty FullName	
+		$HPBIOSUPDUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPBIOSUPDREC64.exe" } | Select-Object -First 1 -ExpandProperty FullName
 	}
 	else {
-		$HPBIOSUPDUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPBIOSUPDREC.exe" } | Select-Object -First 1 -ExpandProperty FullName	
+		$HPBIOSUPDUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPBIOSUPDREC.exe" } | Select-Object -First 1 -ExpandProperty FullName
 	}
 
     # Attempt to detect HPFirmwareUpdRec utility file name
@@ -170,7 +170,7 @@ Process {
 		$HPFirmwareUpdRec = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HpFirmwareUpdRec64.exe" } | Select-Object -First 1 -ExpandProperty FullName
 	}
 	else {
-		$HPFirmwareUpdRec = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HpFirmwareUpdRec.exe" } | Select-Object -First 1 -ExpandProperty FullName	
+		$HPFirmwareUpdRec = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HpFirmwareUpdRec.exe" } | Select-Object -First 1 -ExpandProperty FullName
 	}
 
     # Attempt to detect HPQFlash utility file name
@@ -178,49 +178,49 @@ Process {
 		$HPFlashUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPQFlash64.exe" } | Select-Object -First 1 -ExpandProperty FullName
 	}
 	else {
-		$HPFlashUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPQFlash.exe" } | Select-Object -First 1 -ExpandProperty FullName	
+		$HPFlashUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPQFlash.exe" } | Select-Object -First 1 -ExpandProperty FullName
 	}
 
 	# Select a single flash utility in order of preference. These blocks must remain mutually exclusive, otherwise a
 	# package that ships more than one utility would silently overwrite the previously selected one.
-	if ($HPBIOSUPDUtil -ne $null) {	
+	if ($HPBIOSUPDUtil -ne $null) {
 		# Set required switches for silent upgrade of the bios and logging
 		Write-CMLogEntry -Value "Using HPBIOSUpdRec BIOS update method" -Severity 1
 		# This -r switch appears to be undocumented, which is a shame really, but this prevents the reboot without exit code. The command now returns a correct exit code and lets ConfigMgr reboot the computer gracefully.
 		$FlashSwitches = " -s -r"
 		$FlashUtility = $HPBIOSUPDUtil
 	}
-	elseif ($HPFirmwareUpdRec -ne $null) {	
+	elseif ($HPFirmwareUpdRec -ne $null) {
 		# Set required switches for silent upgrade of the bios and logging
 		Write-CMLogEntry -Value "Using HPFirmwareUpdRec BIOS update method" -Severity 1
 		# This -r switch appears to be undocumented, which is a shame really, but this prevents the reboot without exit code. The command now returns a correct exit code and lets ConfigMgr reboot the computer gracefully.
 		$FlashSwitches = " -s -r"
 		$FlashUtility = $HPFirmwareUpdRec
 	}
-	elseif ($HPFlashUtil -ne $null) {	
+	elseif ($HPFlashUtil -ne $null) {
 		# Set required switches for silent upgrade of the bios and logging
 		Write-CMLogEntry -Value "Using HPQFlash BIOS update method" -Severity 1
 		# This -r switch appears to be undocumented, which is a shame really, but this prevents the reboot without exit code. The command now returns a correct exit code and lets ConfigMgr reboot the computer gracefully.
 		$FlashSwitches = " -s -r"
 		$FlashUtility = $HPFlashUtil
 	}
-	
+
 	if (-not($FlashUtility)) {
-		Write-CMLogEntry -Value "Supported upgrade utility was not found." -Severity 3; exit 1	
+		Write-CMLogEntry -Value "Supported upgrade utility was not found." -Severity 3; exit 1
 	}
-	
+
 	if (-not([System.String]::IsNullOrEmpty($PasswordBin))) {
 		# Add password to the flash bios switches
-		$FlashSwitches = $FlashSwitches + " -p""$($PSScriptRoot)\$($PasswordBin)"""	
+		$FlashSwitches = $FlashSwitches + " -p""$($PSScriptRoot)\$($PasswordBin)"""
 		Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches)" -Severity 1
 	}
 	else {
 		Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches)" -Severity 1
 	}
-	
+
 	# Determine if we're running in WinPE or Full OS
 	if (($TSEnvironment -ne $null) -and ($TSEnvironment.Value("_SMSTSinWinPE") -eq $true)) {
-		try {		
+		try {
 			# Start flash update process
 			Write-CMLogEntry -Value "Running Flash Update: $($FlashUtility)$($FlashSwitches)" -Severity 1
 			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -Passthru -Wait -ErrorAction Stop
@@ -230,7 +230,7 @@ Process {
 			Write-CMLogEntry -Value "Flash utility exit code: $($FlashExitCode)" -Severity 1
 		}
 		catch [System.Exception] {
-			Write-CMLogEntry -Value "An error occured while updating the system BIOS in WinPE phase. Error message: $($_.Exception.Message)" -Severity 3; exit 1	
+			Write-CMLogEntry -Value "An error occured while updating the system BIOS in WinPE phase. Error message: $($_.Exception.Message)" -Severity 3; exit 1
 		}
 
 		# Evaluate the exit code returned by the flash utility. Only 0 (success) and 3010 (success, reboot required)
@@ -263,7 +263,7 @@ Process {
 			Write-CMLogEntry -Value "BitLocker inventory did not return one supported protection state for volume $($env:SystemDrive). BIOS update is blocked." -Severity 3; exit 1
 		}
 		$OSDriveEncrypted = $EncryptedVolumes[0].ProtectionStatus -eq 1
-				
+
 		# Suspend BitLocker if the operating system volume is protected
 		if ($OSDriveEncrypted -eq $true) {
 			Write-CMLogEntry -Value "Suspending BitLocker protected volume: $($env:SystemDrive)" -Severity 1
@@ -287,14 +287,14 @@ Process {
 				$null = Enable-BitLockerProtection
 				exit 1
 			}
-		}		
-		
+		}
+
 		# Start Bios update process
-		try {			
+		try {
 			Write-CMLogEntry -Value "Running Flash Update: $($FlashUtility)$($FlashSwitches)" -Severity 1
 			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -Passthru -Wait -ErrorAction Stop
 			$FlashExitCode = $FlashProcess.ExitCode
-			
+
 			# Output Exit Code
 			Write-CMLogEntry -Value "Flash utility exit code: $($FlashExitCode)" -Severity 1
 		}

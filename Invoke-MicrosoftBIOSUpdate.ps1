@@ -17,7 +17,7 @@
     Contact:     @modaly_it / @NickolajA
     Created:     2019-07-11
     Updated:     2020-04-11
-    
+
     Version history:
     1.0.0 - (2019-07-11) Script created (Maurice Daly)
 	1.0.1 - (2019-07-25) Minor fixes
@@ -42,7 +42,7 @@ Begin {
 Process {
 	# Set Log Path
 	$LogsDirectory = Join-Path $env:SystemRoot "Temp"
-	
+
     # Functions
     function Write-CMLogEntry {
 	    param(
@@ -77,16 +77,16 @@ Process {
 
         # Construct final log entry
         $LogText = "<![LOG[$($Value)]LOG]!><time=""$($Time)"" date=""$($Date)"" component=""MicrosoftBIOSUpdate.log"" context=""$($Context)"" type=""$($Severity)"" thread=""$($PID)"" file="""">"
-	
+
 	    # Add value to log file
         try {
-	        Out-File -InputObject $LogText -Append -NoClobber -Encoding Default -FilePath $LogFilePath -ErrorAction Stop 
+	        Out-File -InputObject $LogText -Append -NoClobber -Encoding Default -FilePath $LogFilePath -ErrorAction Stop
         }
         catch [System.Exception] {
             Write-Warning -Message "Unable to append log entry to Invoke-MicrosoftBIOSUpdate.log file. Error message: $($_.Exception.Message)"
         }
     }
-	
+
 	function Invoke-Executable {
 		param (
 			[parameter(Mandatory = $true, HelpMessage = "Specify the file name or path of the executable to be invoked, including the extension")]
@@ -96,7 +96,7 @@ Process {
 			[ValidateNotNull()]
 			[string]$Arguments
 		)
-		
+
 		# Construct a hash-table for default parameter splatting
 		$SplatArgs = @{
 			FilePath = $FilePath
@@ -104,12 +104,12 @@ Process {
 			Passthru = $true
 			ErrorAction = "Stop"
 		}
-		
+
 		# Add ArgumentList param if present
 		if (-not ([System.String]::IsNullOrEmpty($Arguments))) {
 			$SplatArgs.Add("ArgumentList", $Arguments)
 		}
-		
+
 		# Invoke executable and wait for process to exit
 		try {
 			$Invocation = Start-Process @SplatArgs
@@ -121,10 +121,10 @@ Process {
 			Write-CMLogEntry -Value "Failed to invoke '$($FilePath)'. Error message: $($_.Exception.Message)" -Severity 3
 			return 1
 		}
-		
+
 		return $Invocation.ExitCode
 	}
-	
+
 	# A virtual machine has no physical firmware flash chip. The guest BIOS/UEFI is a software template
 	# owned by the hypervisor, so firmware payloads cannot be applied inside the guest. Skip gracefully.
 	try {
@@ -144,25 +144,25 @@ Process {
 		Write-CMLogEntry -Value "Virtual machine detected ('$($ComputerSystem.Manufacturer) $($ComputerSystem.Model)'). BIOS/UEFI firmware is managed by the hypervisor, skipping BIOS flash" -Severity 2
 		exit 0
 	}
-	
+
 	# Default to task sequence variable set in detection script
 	if (($null -ne $TSEnvironment) -and (-not([string]::IsNullOrEmpty($TSEnvironment.Value("OSDBIOSPackage01"))))) {
 		Write-CMLogEntry -Value "Using BIOS package location set in OSDBIOSPackage01 TS variable" -Severity 1
 		$OSDFirmwarePackageLocation = $TSEnvironment.Value("OSDBIOSPackage01")
 	}
-	
+
 	# Run BIOS update process if BIOS package exists
 	if (-not([string]::IsNullOrEmpty($OSDFirmwarePackageLocation))){
 		# Write log file for script execution
 		Write-CMLogEntry -Value "Initiating pnputil to apply firmware updates" -Severity 1
-		
+
 		$FirmwareInfPath = Join-Path -Path $OSDFirmwarePackageLocation -ChildPath "*.inf"
 		$FirmwareLogPath = Join-Path -Path $LogsDirectory -ChildPath "Install-MicrosoftFirmware.txt"
-		
+
 		# Paths are quoted to support spaces and the native exit code is propagated back to the caller
 		$PnPUtilCommand = "pnputil.exe /add-driver '$($FirmwareInfPath)' /subdirs /install | Out-File -FilePath '$($FirmwareLogPath)' -Force; exit `$LASTEXITCODE"
 		$ApplyFirmwareInvocation = Invoke-Executable -FilePath "powershell.exe" -Arguments "-ExecutionPolicy Bypass -NoProfile -Command ""& { $($PnPUtilCommand) }"""
-		
+
 		switch ($ApplyFirmwareInvocation) {
 			0 {
 				Write-CMLogEntry -Value "Firmware update staging completed successfully" -Severity 1

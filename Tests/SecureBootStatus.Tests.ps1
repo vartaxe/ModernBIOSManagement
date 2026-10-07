@@ -86,4 +86,3 @@ foreach ($Case in @(
 }
 
 Write-Output "Secure Boot status regression checks passed."
-
