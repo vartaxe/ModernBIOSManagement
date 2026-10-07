@@ -14,6 +14,8 @@ The modern downloader supports two package-selection sources. AdminService mode 
 
 BIOS package matching uses the manufacturer, model/SystemSKU and BIOS version or release date, not the Windows release or build number. Windows feature updates do not require a version-mapping entry in these scripts. That includes Windows 11 26H1 (build 28000, a specialized release for selected new hardware) and Windows 11 26H2 (build 26300, the annual enablement-package release). Microsoft Surface firmware delivered through driver packages is still handled as such.
 
+This package-selection independence does not override the deployment platform's support matrix. Windows 11 26H1 is a new-hardware-only release rather than a general upgrade target, and Configuration Manager 2509 does not support Windows 11 26H2 clients; use Configuration Manager 2603 or later for 26H2 task sequences.
+
 The scripts use `Get-CimInstance` for local hardware, ConfigMgr client, time-zone and BitLocker queries. In WinPE, include the WinPE-WMI, WinPE-NetFX, WinPE-Scripting and WinPE-PowerShell optional components and their dependencies. CIM queries are local and do not require WinRM configuration.
 
 Replacing WMI cmdlets does not make the entire solution PowerShell 7 compatible: the legacy downloader still uses `New-WebServiceProxy`, which requires Windows PowerShell. Continue using the supported ConfigMgr task-sequence PowerShell environment.
@@ -47,6 +49,17 @@ Failure paths now exit with the original Dell exit code instead of a blanket `ex
 `SMSTSBIOSUpdateColdBootRequired` is a new task-sequence variable. Codes 15, 16 and 19 require a full or manual AC power cycle rather than a warm restart, so the script records only the stronger requirement and lets the task sequence decide when to shut the machine down. It deliberately does not also set `SMSTSBIOSUpdateRebootRequired`, because a warm `Restart Computer` step does not satisfy those results.
 
 For a consistent task-sequence contract, HP and Microsoft code 3010 and Lenovo WinUPTP code 0 set `SMSTSBIOSUpdateRebootRequired`. HP code 0 is plain success. Lenovo exit code 1073807364 (`0x3FFF0004`) is not present in Lenovo's published WinUPTP result tables, so the script logs it as an unverified failure and requires review of `winuptp.log` instead of reporting success.
+
+## AdminService authentication security
+
+The modern downloader does not install or update PowerShell Gallery modules during
+deployment. External AdminService/CMG authentication uses the configured tenant,
+client, application, user name, and password values to request an OAuth token
+directly. This resource-owner-password flow is legacy and incompatible with accounts
+that require MFA or passwordless authentication. Where the target API supports
+app-only access, migrate unattended workloads to a service principal with a
+certificate credential; review Microsoft's
+[ROPC limitations and migration guidance](https://learn.microsoft.com/entra/identity-platform/v2-oauth-ropc).
 
 ## Transport and BitLocker safety
 

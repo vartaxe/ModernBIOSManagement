@@ -299,7 +299,8 @@ Process {
 					Write-CMLogEntry -Value "A new version of the BIOS has been detected. Current release $($CurrentBIOSVersion) will be replaced by $($AvailableBIOSVersion)." -Severity 1
 				}
 			}
-			elseif ($CurrentBIOSVersion -like "A*") {
+			elseif ($CurrentBIOSVersion -match "^A(?<CurrentRevision>\d+)$") {
+				$CurrentRevision = [int]$Matches.CurrentRevision
 				# Compare current BIOS release to available
 				if ($AvailableBIOSVersion -like "*.*.*") {
 					# Assume that the bios is new as moving from Axx to x.x.x formats
@@ -309,7 +310,8 @@ Process {
 					}
 					Write-CMLogEntry -Value "A new version of the BIOS has been detected. Current release $($CurrentBIOSVersion) will be replaced by $($AvailableBIOSVersion)." -Severity 1
 				}
-				elseif ($AvailableBIOSVersion -gt $CurrentBIOSVersion) {
+				elseif ($AvailableBIOSVersion -match "^A(?<AvailableRevision>\d+)$" -and
+					[int]$Matches.AvailableRevision -gt $CurrentRevision) {
 					# Write output to task sequence variable
 					if ($DebugMode -ne $true) {
 						$TSEnvironment.Value("NewBIOSAvailable") = $true

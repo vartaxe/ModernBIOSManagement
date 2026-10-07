@@ -95,6 +95,20 @@ try {
 			Assert-Equal ($TSEnvironment.Values["NewBIOSAvailable"] -eq $true) $Case.Expected "Version comparison in $($File.Name), $($Case.Manufacturer), $($Case.Version)"
 		}
 
+		foreach ($Case in @(
+			@{ Current = "A9"; Available = "A10"; Expected = $true },
+			@{ Current = "A10"; Available = "A9"; Expected = $false },
+			@{ Current = "A10"; Available = "A10"; Expected = $false }
+		)) {
+			$script:BIOS.SMBIOSBIOSVersion = $Case.Current
+			$TSEnvironment.Values.Clear()
+			Compare-BIOSVersion -ComputerManufacturer "Dell" `
+				-AvailableBIOSVersion $Case.Available
+			Assert-Equal ($TSEnvironment.Values["NewBIOSAvailable"] -eq $true) `
+				$Case.Expected "Dell A-revision comparison in $($File.Name), $($Case.Current) to $($Case.Available)"
+		}
+		$script:BIOS.SMBIOSBIOSVersion = "1.2.3"
+
 		$script:QueryFails = $true
 		$Failure = $null
 		try {
