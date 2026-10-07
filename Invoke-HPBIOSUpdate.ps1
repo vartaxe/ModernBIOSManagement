@@ -53,6 +53,12 @@ Begin {
 	}	
 }
 Process {
+	$LogsDirectory = Join-Path -Path $env:SystemRoot -ChildPath "Temp"
+	$LogDirectoryPath = if ($null -ne $TSEnvironment) { $TSEnvironment.Value("_SMSTSLogPath") } else { $null }
+	if ([string]::IsNullOrEmpty($LogDirectoryPath)) {
+		$LogDirectoryPath = $LogsDirectory
+	}
+
 	# Functions
 	function Write-CMLogEntry {	
 		param (
@@ -71,7 +77,7 @@ Process {
 		)
 		
 		# Determine log file location
-		$LogFilePath = Join-Path -Path $Script:TSEnvironment.Value("_SMSTSLogPath") -ChildPath $FileName
+		$LogFilePath = Join-Path -Path $LogDirectoryPath -ChildPath $FileName
 		
 		# Construct time stamp for log entry
 		$Time = -join @((Get-Date -Format "HH:mm:ss.fff"), "+", (Get-CimInstance -ClassName Win32_TimeZone | Select-Object -ExpandProperty Bias))
@@ -89,21 +95,59 @@ Process {
 		try {
 			Out-File -InputObject $LogText -Append -NoClobber -Encoding Default -FilePath $LogFilePath -ErrorAction Stop 
 		}		
+
 		catch [System.Exception] {
 			Write-Warning -Message "Unable to append log entry to Invoke-HPBIOSUpdate.log file. Error message: $($_.Exception.Message)"
 		}
+	}
+
+	function Enable-BitLockerProtection {
+		if ($Script:BitLockerSuspendedByScript -ne $true) {
+			return $true
+		}
+
+		Write-CMLogEntry -Value "Re-enabling BitLocker protection on volume: $($env:SystemDrive)" -Severity 1
+		Manage-Bde -Protectors -Enable $env:SystemDrive | Out-Null
+		if ($LASTEXITCODE -ne 0) {
+			Write-CMLogEntry -Value "Failed to re-enable BitLocker protection on volume $($env:SystemDrive). Manage-Bde returned exit code $($LASTEXITCODE)." -Severity 3
+			return $false
+		}
+
+		try {
+			$Volume = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction Stop | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
+			if (($null -eq $Volume) -or ($Volume.ProtectionStatus -ne 1)) {
+				Write-CMLogEntry -Value "BitLocker protection did not return to the protected state on volume $($env:SystemDrive)." -Severity 3
+				return $false
+			}
+		}
+		catch [System.Exception] {
+			Write-CMLogEntry -Value "Unable to verify that BitLocker protection was re-enabled on volume $($env:SystemDrive). Error message: $($_.Exception.Message)" -Severity 3
+			return $false
+		}
+
+		$Script:BitLockerSuspendedByScript = $false
+		return $true
 	}
 	
 	# A virtual machine has no physical firmware flash chip. The guest BIOS/UEFI is a software template
 	# owned by the hypervisor, so vendor flash utilities refuse to execute and fail the task sequence.
 	# Skip gracefully instead.
-	$ComputerSystem = Get-CimInstance -ClassName "Win32_ComputerSystem" -ErrorAction SilentlyContinue
-	if ($ComputerSystem -ne $null) {
-		$VirtualMachineModels = @("Virtual Machine", "VMware Virtual Platform", "VMware7,1", "VMware20,1", "VirtualBox", "HVM domU", "KVM", "QEMU Virtual Machine", "Standard PC (Q35 + ICH9, 2009)", "Standard PC (i440FX + PIIX, 1996)", "Parallels Virtual Platform", "Google Compute Engine", "AHV")
-		if (($ComputerSystem.Model -in $VirtualMachineModels) -or ($ComputerSystem.Manufacturer -match "VMware|QEMU|innotek|Xen|Parallels|Nutanix|Red Hat")) {
-			Write-CMLogEntry -Value "Virtual machine detected ('$($ComputerSystem.Manufacturer) $($ComputerSystem.Model)'). BIOS/UEFI firmware is managed by the hypervisor, skipping BIOS flash" -Severity 2
-			exit 0
-		}
+	try {
+		$ComputerSystems = @(Get-CimInstance -ClassName "Win32_ComputerSystem" -ErrorAction Stop)
+	}
+	catch [System.Exception] {
+		Write-CMLogEntry -Value "Unable to inventory the computer platform safely. BIOS update is blocked. Error message: $($_.Exception.Message)" -Severity 3
+		exit 1
+	}
+	if (($ComputerSystems.Count -ne 1) -or [string]::IsNullOrWhiteSpace([string]$ComputerSystems[0].Model) -or [string]::IsNullOrWhiteSpace([string]$ComputerSystems[0].Manufacturer)) {
+		Write-CMLogEntry -Value "Computer platform inventory did not return one complete system identity. BIOS update is blocked." -Severity 3
+		exit 1
+	}
+	$ComputerSystem = $ComputerSystems[0]
+	$VirtualMachineModels = @("Virtual Machine", "VMware Virtual Platform", "VMware7,1", "VMware20,1", "VMware Virtual Platform None", "VirtualBox", "HVM domU", "KVM", "QEMU Virtual Machine", "Standard PC (Q35 + ICH9, 2009)", "Standard PC (i440FX + PIIX, 1996)", "Parallels Virtual Platform", "Google Compute Engine", "AHV")
+	if (($ComputerSystem.Model -in $VirtualMachineModels) -or ($ComputerSystem.Manufacturer -match "VMware|QEMU|innotek|Xen|Parallels|Nutanix|Red Hat|Google|Amazon EC2|OpenStack")) {
+		Write-CMLogEntry -Value "Virtual machine detected ('$($ComputerSystem.Manufacturer) $($ComputerSystem.Model)'). BIOS/UEFI firmware is managed by the hypervisor, skipping BIOS flash" -Severity 2
+		exit 0
 	}
 	
 	# Change working directory to path containing BIOS files	
@@ -192,8 +236,14 @@ Process {
 		# Evaluate the exit code returned by the flash utility. Only 0 (success) and 3010 (success, reboot required)
 		# are documented as successful, anything else has to fail the task sequence step.
 		switch ($FlashExitCode) {
-			{ $_ -in @(0, 3010) } {
+			0 {
+				Write-CMLogEntry -Value "The BIOS update completed successfully." -Severity 1
+			}
+			3010 {
 				Write-CMLogEntry -Value "The BIOS update completed successfully, a reboot is required to apply the new BIOS version." -Severity 1
+				if ($TSEnvironment -ne $null) {
+					$TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
+				}
 			}
 			default {
 				Write-CMLogEntry -Value "The BIOS update failed. Flash utility returned exit code: $($FlashExitCode)" -Severity 3; exit $FlashExitCode
@@ -204,28 +254,38 @@ Process {
 		# Used in a later section of the task sequence
 		# Detect Bitlocker Status
 		try {
-			$OSDriveEncrypted = $false
-			$EncryptedVolumes = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction Stop | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
-			foreach ($Volume in $EncryptedVolumes) {
-				# ProtectionStatus of 1 means protection is currently on, which is what has to be suspended before flashing
-				if ($Volume.ProtectionStatus -eq 1) {
-					$OSDriveEncrypted = $true
-				}
-			}
+			$EncryptedVolumes = @(Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction Stop | Where-Object { $_.DriveLetter -eq $env:SystemDrive })
 		}
 		catch [System.Exception] {
 			Write-CMLogEntry -Value "An error occured while detecting the BitLocker protection status of volume: $($env:SystemDrive). Error message: $($_.Exception.Message)" -Severity 3; exit 1
 		}
+		if (($EncryptedVolumes.Count -ne 1) -or ($EncryptedVolumes[0].ProtectionStatus -notin @(0, 1))) {
+			Write-CMLogEntry -Value "BitLocker inventory did not return one supported protection state for volume $($env:SystemDrive). BIOS update is blocked." -Severity 3; exit 1
+		}
+		$OSDriveEncrypted = $EncryptedVolumes[0].ProtectionStatus -eq 1
 				
 		# Suspend BitLocker if the operating system volume is protected
 		if ($OSDriveEncrypted -eq $true) {
 			Write-CMLogEntry -Value "Suspending BitLocker protected volume: $($env:SystemDrive)" -Severity 1
-			Manage-Bde -Protectors -Disable $env:SystemDrive | Out-Null
+			Manage-Bde -Protectors -Disable $env:SystemDrive -RebootCount 1 | Out-Null
+			if ($LASTEXITCODE -ne 0) {
+				Write-CMLogEntry -Value "Failed to suspend BitLocker protection on volume $($env:SystemDrive). Manage-Bde returned exit code $($LASTEXITCODE)." -Severity 3; exit 1
+			}
+			$Script:BitLockerSuspendedByScript = $true
 
 			# Verify that protection was actually suspended before flashing the BIOS
-			$VerifyVolume = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
+			try {
+				$VerifyVolume = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction Stop | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
+			}
+			catch [System.Exception] {
+				Write-CMLogEntry -Value "Unable to verify BitLocker suspension on volume $($env:SystemDrive). Error message: $($_.Exception.Message)" -Severity 3
+				$null = Enable-BitLockerProtection
+				exit 1
+			}
 			if (($VerifyVolume -eq $null) -or ($VerifyVolume.ProtectionStatus -ne 0)) {
-				Write-CMLogEntry -Value "Failed to suspend BitLocker protection on volume: $($env:SystemDrive). Aborting BIOS update to prevent a recovery key prompt." -Severity 3; exit 1
+				Write-CMLogEntry -Value "Failed to suspend BitLocker protection on volume: $($env:SystemDrive). Aborting BIOS update to prevent a recovery key prompt." -Severity 3
+				$null = Enable-BitLockerProtection
+				exit 1
 			}
 		}		
 		
@@ -239,17 +299,30 @@ Process {
 			Write-CMLogEntry -Value "Flash utility exit code: $($FlashExitCode)" -Severity 1
 		}
 		catch [System.Exception] {
-			Write-CMLogEntry -Value "An error occured while updating the system BIOS in Full OS phase. Error message: $($_.Exception.Message)" -Severity 3; exit 1
+			Write-CMLogEntry -Value "An error occured while updating the system BIOS in Full OS phase. Error message: $($_.Exception.Message)" -Severity 3
+			$null = Enable-BitLockerProtection
+			exit 1
 		}
 
 		# Evaluate the exit code returned by the flash utility. Only 0 (success) and 3010 (success, reboot required)
 		# are documented as successful, anything else has to fail the task sequence step.
 		switch ($FlashExitCode) {
-			{ $_ -in @(0, 3010) } {
+			0 {
+				Write-CMLogEntry -Value "The BIOS update completed successfully." -Severity 1
+				if (-not (Enable-BitLockerProtection)) {
+					exit 1
+				}
+			}
+			3010 {
 				Write-CMLogEntry -Value "The BIOS update completed successfully, a reboot is required to apply the new BIOS version." -Severity 1
+				if ($TSEnvironment -ne $null) {
+					$TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
+				}
 			}
 			default {
-				Write-CMLogEntry -Value "The BIOS update failed. Flash utility returned exit code: $($FlashExitCode)" -Severity 3; exit $FlashExitCode
+				Write-CMLogEntry -Value "The BIOS update failed. Flash utility returned exit code: $($FlashExitCode)" -Severity 3
+				$null = Enable-BitLockerProtection
+				exit $FlashExitCode
 			}
 		}
 	}

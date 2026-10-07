@@ -1,36 +1,47 @@
 # ModernBIOSManagement
 For implementation instructions, please go to https://www.msendpointmgr.com/modern-bios-management
 
-BIOS package matching uses the manufacturer, model/SystemSKU and BIOS version or release date, not the Windows release or build number. Windows feature updates do not require a version-mapping entry in these scripts. Microsoft Surface firmware delivered through driver packages is still handled as such.
+BIOS package matching uses the manufacturer, model/SystemSKU and BIOS version or release date, not the Windows release or build number. Windows feature updates do not require a version-mapping entry in these scripts. That includes Windows 11 26H1 (build 28000, a specialized release for selected new hardware) and Windows 11 26H2 (build 26300, the annual enablement-package release). Microsoft Surface firmware delivered through driver packages is still handled as such.
 
 The scripts use `Get-CimInstance` for local hardware, ConfigMgr client, time-zone and BitLocker queries. In WinPE, include the WinPE-WMI, WinPE-NetFX, WinPE-Scripting and WinPE-PowerShell optional components and their dependencies. CIM queries are local and do not require WinRM configuration.
 
 Replacing WMI cmdlets does not make the entire solution PowerShell 7 compatible: the legacy downloader still uses `New-WebServiceProxy`, which requires Windows PowerShell. Continue using the supported ConfigMgr task-sequence PowerShell environment.
 
-Run `.\Tests\CimMigration.Tests.ps1` for isolated regression checks; these mock hardware queries and do not download packages or flash firmware.
+Run the scripts under `.\Tests` for isolated regression checks; they mock hardware queries and do not download packages or flash firmware.
 
 ## Dell Update Package (DUP) exit code handling
 
-`Invoke-DellBIOSUpdate.ps1` evaluates the full documented DUP exit code table in both the WinPE and full OS branches. Exit codes are compared as integers; the previous `-match "0|2"` regex comparison also accepted 10, 12, 20 and 120 as success.
+`Invoke-DellBIOSUpdate.ps1` evaluates Dell's documented DUP exit codes in one shared handler used by both the WinPE and full OS branches. Exit codes are compared as integers; the previous `-match "0|2"` regex comparison also accepted 10, 12, 20 and 120 as success.
 
 | Code | Meaning | Script result |
 | --- | --- | --- |
 | 0 | Successful | Success |
+| 1 | General update failure | Failure, exits 1 |
 | 2, 14 | Reboot required (14 with unmet soft dependencies) | Success, sets `SMSTSBIOSUpdateRebootRequired` |
 | 3 | Soft dependency error, typically the same or a newer BIOS is already installed | Warning, not a failure |
 | 6 | The package is restarting the system itself | Success, the script does not request a second reboot |
 | 13 | Successful with unmet soft dependencies | Warning, treated as success |
-| 15, 16 | Full power cycle (cold boot) required | Warning, sets `SMSTSBIOSUpdateColdBootRequired` and `SMSTSBIOSUpdateRebootRequired` |
+| 15, 16 | Full power cycle required | Warning, sets `SMSTSBIOSUpdateColdBootRequired` only |
+| 17 | Update successful, rollback image creation failed | Warning, treated as success |
+| 18 | Update successful; package initiated the virtual AC power cycle | Warning, treated as success |
+| 19 | Update successful; manual AC power cycle required | Warning, sets `SMSTSBIOSUpdateColdBootRequired` only |
+| 20 | Update successful, post-install script failed | Warning, treated as success; review the Dell log |
 | 4 | Hard dependency error | Failure, exits 4 |
 | 5 | Qualification error, cannot be bypassed with the force switch | Failure, exits 5 |
-| 10 | System is on battery power | Failure, exits 10 |
+| 10 | Unspecified client-BIOS utility error (examples include battery/AC power, embedded-controller or hardware failures) | Failure, exits 10 and preserves the Dell result for diagnosis |
 | any other | Unhandled failure, including the Linux-only code 9 | Failure, exits with the original Dell exit code |
 
 Failure paths now exit with the original Dell exit code instead of a blanket `exit 1`, so ConfigMgr or Intune can distinguish failure classes.
 
-`SMSTSBIOSUpdateColdBootRequired` is a new task-sequence variable. Codes 15 and 16 require a full power cycle rather than a warm restart, so the script records the requirement and lets the task sequence decide when to shut the machine down; a warm `Restart Computer` step does not apply those updates.
+`SMSTSBIOSUpdateColdBootRequired` is a new task-sequence variable. Codes 15, 16 and 19 require a full or manual AC power cycle rather than a warm restart, so the script records only the stronger requirement and lets the task sequence decide when to shut the machine down. It deliberately does not also set `SMSTSBIOSUpdateRebootRequired`, because a warm `Restart Computer` step does not satisfy those results.
 
-The other vendor scripts are unchanged in this respect: HP uses 0 and 3010, Lenovo WinUPTP uses 0 and the benign 1073807364, and no further authoritative code tables were applied.
+For a consistent task-sequence contract, HP and Microsoft code 3010 and Lenovo WinUPTP code 0 set `SMSTSBIOSUpdateRebootRequired`. HP code 0 is plain success. Lenovo exit code 1073807364 (`0x3FFF0004`) is not present in Lenovo's published WinUPTP result tables, so the script logs it as an unverified failure and requires review of `winuptp.log` instead of reporting success.
+
+## Transport and BitLocker safety
+
+Both downloaders enforce normal HTTPS certificate validation. Configure the ConfigMgr AdminService or legacy web service with a server-authentication certificate that chains to a root trusted by the full operating system and the WinPE boot image. The scripts do not install a global certificate callback or accept an untrusted/self-signed endpoint. Import the issuing CA chain into WinPE when an enterprise PKI is used.
+
+The Dell, HP and Lenovo update scripts query BitLocker through `Win32_EncryptableVolume`, fail closed if protection state cannot be determined, and suspend protection for one reboot only (`manage-bde -RebootCount 1`). If the update fails or succeeds without requiring a reboot, the script immediately re-enables protection and verifies the protected state. Results that require a reboot or cold boot retain the bounded suspension so the staged firmware can be applied safely.
 
 ## Virtual machine detection
 
@@ -38,7 +49,7 @@ A virtual machine has no physical flash chip. The guest BIOS/UEFI is a binary te
 
 `Invoke-CMDownloadBIOSPackage.ps1` previously carried two separate inline virtual machine model lists that had already drifted apart, so a VMware guest could pass one gate and fail the other. Both call sites now use a single `Test-VirtualMachinePlatform` helper that matches the known Hyper-V, VMware, VirtualBox, Xen, KVM/QEMU, Parallels, Google Compute Engine and Nutanix AHV model strings, with a manufacturer regex fallback. `Microsoft` is deliberately absent from that regex because Surface devices report `Microsoft Corporation` exactly like Hyper-V guests; Hyper-V is matched on the `Virtual Machine` model string instead.
 
-The four vendor flash scripts previously had no virtual machine detection at all, so invoking one directly outside the downloader attempted a flash and failed hard. Each now exits 0 with a severity 2 log entry before any BitLocker suspension or working directory change, so a guest is skipped cleanly rather than leaving BitLocker suspended behind a failed step.
+The four vendor flash scripts previously had no virtual machine detection at all, so invoking one directly outside the downloader attempted a flash and failed hard. Each now uses the same model strings and manufacturer fallbacks, including AWS EC2, OpenStack and Google, and exits 0 with a severity 2 log entry before any BitLocker suspension or working directory change. A guest is therefore skipped cleanly rather than leaving BitLocker suspended behind a failed step.
 
 `Invoke-CMDownloadBIOSPackage_Legacy.ps1` keeps its inline model-only list, widened to the same model strings, to preserve the frozen state of that script.
 
@@ -46,7 +57,7 @@ Hypervisor integration suites such as VMware Tools, Hyper-V Integration Services
 
 ## Secure Boot certificate expiry (2026)
 
-Microsoft's 2011 Secure Boot certificates expire on three dates: Microsoft Corporation KEK CA 2011 on June 24, Microsoft Corporation UEFI CA 2011 on June 27, and Microsoft Windows Production PCA 2011 on October 19, 2026. Their replacements span the KEK and DB: `Microsoft Corporation KEK 2K CA 2023`, `Windows UEFI CA 2023`, `Microsoft UEFI CA 2023`, and `Microsoft Option ROM UEFI CA 2023`.
+Microsoft's 2011 Secure Boot certificates expire on three dates: Microsoft Corporation KEK CA 2011 on June 24, Microsoft UEFI CA 2011 (certificate subject `Microsoft Corporation UEFI CA 2011`) on June 27, and Microsoft Windows Production PCA 2011 on October 19, 2026. Their replacements span the KEK and DB: `Microsoft Corporation KEK 2K CA 2023`, `Windows UEFI CA 2023`, `Microsoft UEFI CA 2023`, and `Microsoft Option ROM UEFI CA 2023`.
 
 An untransitioned system continues to boot and receive standard Windows updates after expiry, but it cannot receive future boot-chain protections that depend on the 2023 trust anchors. Do not use Event IDs 1796 or 1803 as general expiry indicators: 1796 is an unexpected Secure Boot update error and 1803 identifies a missing OEM-signed KEK. Microsoft documents `UEFICA2023Status=Updated` and Event ID 1808 as completion signals; Event 1801 indicates incomplete servicing and Event 1795 a firmware error.
 

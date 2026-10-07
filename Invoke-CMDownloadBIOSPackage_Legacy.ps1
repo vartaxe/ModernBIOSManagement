@@ -112,9 +112,6 @@ Begin {
 	}
 }
 Process {
-   	 # SSL Certificate Validation Workaround
-	[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}	
-
 	# Functions
 	function Write-CMLogEntry {
 		param (
@@ -469,7 +466,7 @@ Process {
 	# Validate not virtual machine
 	$ComputerSystemType = Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty "Model"
 	
-	if ($ComputerSystemType -notin @("Virtual Machine", "VMware Virtual Platform", "VMware7,1", "VMware20,1", "VirtualBox", "HVM domU", "KVM", "QEMU Virtual Machine", "Standard PC (Q35 + ICH9, 2009)", "Standard PC (i440FX + PIIX, 1996)", "Parallels Virtual Platform", "Google Compute Engine", "AHV")) {
+	if ($ComputerSystemType -notin @("Virtual Machine", "VMware Virtual Platform", "VMware7,1", "VMware20,1", "VMware Virtual Platform None", "VirtualBox", "HVM domU", "KVM", "QEMU Virtual Machine", "Standard PC (Q35 + ICH9, 2009)", "Standard PC (i440FX + PIIX, 1996)", "Parallels Virtual Platform", "Google Compute Engine", "AHV")) {
 		# Process packages returned from web service
 		if ($Packages -ne $null) {
 			if (($ComputerModel -ne $null) -and (-not ([System.String]::IsNullOrEmpty($ComputerModel))) -or (($SystemSKU -ne $null) -and (-not ([System.String]::IsNullOrEmpty($SystemSKU))))) {
@@ -605,6 +602,7 @@ Process {
 						elseif ($ComputerManufacturer -match "Microsoft") {
 							$PackageList = $PackageList | Sort-Object -Property PackageCreated -Descending | Select-Object -First 1
 						}
+						$PackageList = @($PackageList | Where-Object { $null -ne $_ })
 						if ($PackageList.Count -eq 1) {
 							# Check if BIOS package is newer than currently installed
 							if ($ComputerManufacturer -match "Dell") {

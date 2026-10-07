@@ -69,6 +69,12 @@ Begin {
 	}
 }
 Process {
+	$LogsDirectory = Join-Path -Path $env:SystemRoot -ChildPath "Temp"
+	$LogDirectoryPath = if ($null -ne $TSEnvironment) { $TSEnvironment.Value("_SMSTSLogPath") } else { $null }
+	if ([string]::IsNullOrEmpty($LogDirectoryPath)) {
+		$LogDirectoryPath = $LogsDirectory
+	}
+
     # Functions
     function Write-CMLogEntry {
 	    param(
@@ -86,7 +92,7 @@ Process {
 		    [string]$FileName = "Invoke-DellBIOSUpdate.log"
 	    )
 	    # Determine log file location
-        $LogFilePath = Join-Path -Path $TSEnvironment.Value("_SMSTSLogPath") -ChildPath $FileName
+        $LogFilePath = Join-Path -Path $LogDirectoryPath -ChildPath $FileName
 
         # Construct time stamp for log entry
         $Time = -join @((Get-Date -Format "HH:mm:ss.fff"), "+", (Get-CimInstance -ClassName Win32_TimeZone | Select-Object -ExpandProperty Bias))
@@ -108,21 +114,137 @@ Process {
             Write-Warning -Message "Unable to append log entry to Invoke-DellBIOSUpdate.log file. Error message: $($_.Exception.Message)"
         }
     }
+
+	function Enable-BitLockerProtection {
+		if ($Script:BitLockerSuspendedByScript -ne $true) {
+			return $true
+		}
+
+		Write-CMLogEntry -Value "Re-enabling BitLocker protection on volume: $($env:SystemDrive)" -Severity 1
+		Manage-Bde -Protectors -Enable $env:SystemDrive | Out-Null
+		if ($LASTEXITCODE -ne 0) {
+			Write-CMLogEntry -Value "Failed to re-enable BitLocker protection on volume $($env:SystemDrive). Manage-Bde returned exit code $($LASTEXITCODE)." -Severity 3
+			return $false
+		}
+
+		try {
+			$Volume = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction Stop | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
+			if (($null -eq $Volume) -or ($Volume.ProtectionStatus -ne 1)) {
+				Write-CMLogEntry -Value "BitLocker protection did not return to the protected state on volume $($env:SystemDrive)." -Severity 3
+				return $false
+			}
+		}
+		catch [System.Exception] {
+			Write-CMLogEntry -Value "Unable to verify that BitLocker protection was re-enabled on volume $($env:SystemDrive). Error message: $($_.Exception.Message)" -Severity 3
+			return $false
+		}
+
+		$Script:BitLockerSuspendedByScript = $false
+		return $true
+	}
+
+	function Resolve-DellBIOSUpdateExitCode {
+		param(
+			[parameter(Mandatory = $true)]
+			[int]$ExitCode,
+			[parameter(Mandatory = $true)]
+			[string]$BIOSLogFile,
+			[parameter(Mandatory = $true)]
+			[ValidateSet("OS offline", "OS online")]
+			[string]$Phase,
+			[parameter(Mandatory = $false)]
+			[bool]$WinPE = $false
+		)
+
+		$Result = 0
+		switch ($ExitCode) {
+			0 {
+				Write-CMLogEntry -Value "BIOS update completed successfully, no restart is required" -Severity 1
+			}
+			{ $_ -in @(2, 14) } {
+				Write-CMLogEntry -Value "BIOS update staged successfully, a restart is required to apply the new BIOS" -Severity 1
+				if ($TSEnvironment -ne $null) {
+					$TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
+				}
+			}
+			3 {
+				Write-CMLogEntry -Value "Flash utility reported a soft dependency error (exit code 3), the system is likely already running this BIOS version. No update was applied." -Severity 2
+			}
+			6 {
+				Write-CMLogEntry -Value "Flash utility has taken control of the power state and is restarting the system (exit code 6)" -Severity 1
+			}
+			13 {
+				Write-CMLogEntry -Value "BIOS update completed successfully, however one or more soft dependencies were not met (exit code 13)" -Severity 2
+			}
+			{ $_ -in @(15, 16) } {
+				Write-CMLogEntry -Value "BIOS update staged successfully, however a full power cycle (cold boot) is required to apply the firmware. A warm restart will not complete the update." -Severity 2
+				if ($TSEnvironment -ne $null) {
+					$TSEnvironment.Value("SMSTSBIOSUpdateColdBootRequired") = "True"
+				}
+			}
+			17 {
+				Write-CMLogEntry -Value "BIOS update completed successfully, but creation of the rollback image failed (exit code 17). Review the Dell log before attempting a rollback." -Severity 2
+			}
+			18 {
+				Write-CMLogEntry -Value "BIOS update completed successfully and the package initiated the required virtual AC power cycle (exit code 18)." -Severity 2
+			}
+			19 {
+				Write-CMLogEntry -Value "BIOS update completed successfully, but a manual AC power cycle is required before it becomes effective (exit code 19)." -Severity 2
+				if ($TSEnvironment -ne $null) {
+					$TSEnvironment.Value("SMSTSBIOSUpdateColdBootRequired") = "True"
+				}
+			}
+			20 {
+				Write-CMLogEntry -Value "BIOS update completed successfully, but the package post-install script failed (exit code 20). Review the Dell log for any required follow-up." -Severity 2
+			}
+			4 {
+				Write-CMLogEntry -Value "A hard dependency was not met by the flash utility (exit code 4), the required prerequisite BIOS version or hardware is missing. Please review the log file located at $($BIOSLogFile)" -Severity 3
+				$Result = 4
+			}
+			5 {
+				Write-CMLogEntry -Value "The flash utility refused to run on this system (exit code 5, qualification error). This cannot be bypassed with the force switch. Please review the log file located at $($BIOSLogFile)" -Severity 3
+				$Result = 5
+			}
+			10 {
+				# Dell client BIOS utilities define code 10 as an unspecified catch-all for errors not covered by codes 0-9.
+				Write-CMLogEntry -Value "The BIOS utility returned unspecified error code 10. Check battery/AC power, embedded-controller and hardware prerequisites, then review the log file located at $($BIOSLogFile)" -Severity 3
+				$Result = 10
+			}
+			default {
+				Write-CMLogEntry -Value "BIOS update failed during $($Phase) phase with exit code $($ExitCode). Please review the log file located at $($BIOSLogFile)" -Severity 3
+				$Result = $ExitCode
+			}
+		}
+
+		if (($Result -eq 0) -and $WinPE -and ($TSEnvironment -ne $null)) {
+			$TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
+		}
+		return $Result
+	}
 	
 	# A virtual machine has no physical firmware flash chip. The guest BIOS/UEFI is a software template
 	# owned by the hypervisor, so Dell Update Packages refuse to execute and return exit code 5
 	# (QUAL_HARD_ERROR), which would fail the task sequence. Skip gracefully instead.
-	$ComputerSystem = Get-CimInstance -ClassName "Win32_ComputerSystem" -ErrorAction SilentlyContinue
-	if ($ComputerSystem -ne $null) {
-		$VirtualMachineModels = @("Virtual Machine", "VMware Virtual Platform", "VMware7,1", "VMware20,1", "VirtualBox", "HVM domU", "KVM", "QEMU Virtual Machine", "Standard PC (Q35 + ICH9, 2009)", "Standard PC (i440FX + PIIX, 1996)", "Parallels Virtual Platform", "Google Compute Engine", "AHV")
-		if (($ComputerSystem.Model -in $VirtualMachineModels) -or ($ComputerSystem.Manufacturer -match "VMware|QEMU|innotek|Xen|Parallels|Nutanix|Red Hat")) {
-			Write-CMLogEntry -Value "Virtual machine detected ('$($ComputerSystem.Manufacturer) $($ComputerSystem.Model)'). BIOS/UEFI firmware is managed by the hypervisor, skipping BIOS flash" -Severity 2
-			exit 0
-		}
+	try {
+		$ComputerSystems = @(Get-CimInstance -ClassName "Win32_ComputerSystem" -ErrorAction Stop)
+	}
+	catch [System.Exception] {
+		Write-CMLogEntry -Value "Unable to inventory the computer platform safely. BIOS update is blocked. Error message: $($_.Exception.Message)" -Severity 3
+		exit 1
+	}
+	if (($ComputerSystems.Count -ne 1) -or [string]::IsNullOrWhiteSpace([string]$ComputerSystems[0].Model) -or [string]::IsNullOrWhiteSpace([string]$ComputerSystems[0].Manufacturer)) {
+		Write-CMLogEntry -Value "Computer platform inventory did not return one complete system identity. BIOS update is blocked." -Severity 3
+		exit 1
+	}
+	$ComputerSystem = $ComputerSystems[0]
+	$VirtualMachineModels = @("Virtual Machine", "VMware Virtual Platform", "VMware7,1", "VMware20,1", "VMware Virtual Platform None", "VirtualBox", "HVM domU", "KVM", "QEMU Virtual Machine", "Standard PC (Q35 + ICH9, 2009)", "Standard PC (i440FX + PIIX, 1996)", "Parallels Virtual Platform", "Google Compute Engine", "AHV")
+	if (($ComputerSystem.Model -in $VirtualMachineModels) -or ($ComputerSystem.Manufacturer -match "VMware|QEMU|innotek|Xen|Parallels|Nutanix|Red Hat|Google|Amazon EC2|OpenStack")) {
+		Write-CMLogEntry -Value "Virtual machine detected ('$($ComputerSystem.Manufacturer) $($ComputerSystem.Model)'). BIOS/UEFI firmware is managed by the hypervisor, skipping BIOS flash" -Severity 2
+		exit 0
 	}
 	
 	# Default to task sequence variable set in detection script
-	if (-not([string]::IsNullOrEmpty($TSEnvironment.Value("OSDBIOSPackage01")))){
+	if (($null -ne $TSEnvironment) -and (-not([string]::IsNullOrEmpty($TSEnvironment.Value("OSDBIOSPackage01"))))) {
 		Write-CMLogEntry -Value "Using BIOS package location set in OSDBIOSPackage01 TS variable" -Severity 1
 		$Path = $TSEnvironment.Value("OSDBIOSPackage01")
 	}
@@ -148,7 +270,7 @@ Process {
 
 			if ($CurrentBIOSFile -ne $null) {
 				# Set log file location
-				$BIOSLogFile = Join-Path -Path $TSEnvironment.Value("_SMSTSLogPath") -ChildPath $LogFileName
+				$BIOSLogFile = Join-Path -Path $LogDirectoryPath -ChildPath $LogFileName
 
 				# Set required switches for silent upgrade of the bios and logging
 				$FlashSwitches = "/b=""$($CurrentBIOSFile)"" /s /l=""$($BIOSLogFile)"""
@@ -170,7 +292,7 @@ Process {
 					try {
 						# Start flash update process
 						if (-not([System.String]::IsNullOrEmpty($Password))) {
-							Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches -replace $Password, "<password removed>")" -Severity 1
+							Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches -replace [regex]::Escape($Password), "<password removed>")" -Severity 1
 						}
 						else {
 							Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches)" -Severity 1
@@ -179,55 +301,10 @@ Process {
 						
 						Write-CMLogEntry -Value "Flash utility exit code: $($FlashProcess.ExitCode)" -Severity 1
 
-						# Evaluate the Dell Update Package (DUP) exit code, see the DUP exit code table for the full list
-						# Exit codes must be compared as integers, a regex match such as "0|2" would also accept 10, 12, 20 and 120
-						switch ($FlashProcess.ExitCode) {
-							0 {
-								# SUCCESSFUL - update applied, no restart required
-								Write-CMLogEntry -Value "BIOS update completed successfully, no restart is required" -Severity 1
-								$TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
-							}
-							{ $_ -in @(2, 14) } {
-								# REBOOT_REQUIRED - the update is staged and a restart applies it
-								Write-CMLogEntry -Value "BIOS update staged successfully, a restart is required to apply the new BIOS" -Severity 1
-								$TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
-								$TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
-							}
-							3 {
-								# DEP_SOFT_ERROR - typically the same version is already installed or a downgrade was attempted, non-blocking
-								Write-CMLogEntry -Value "Flash utility reported a soft dependency error (exit code 3), the system is likely already running this BIOS version. No update was applied." -Severity 2
-								$TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
-							}
-							6 {
-								# REBOOTING_SYSTEM - the flash utility is restarting the device itself, do not trigger a second restart
-								Write-CMLogEntry -Value "Flash utility has taken control of the power state and is restarting the system (exit code 6)" -Severity 1
-								$TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
-							}
-							13 {
-								# UPDATE_SUCCESSFUL with unmet soft dependencies
-								Write-CMLogEntry -Value "BIOS update completed successfully, however one or more soft dependencies were not met (exit code 13)" -Severity 2
-								$TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
-							}
-							{ $_ -in @(15, 16) } {
-								# CONTAINER_POWER_CYCLE_REQUIRED - a full power cycle is required, a warm restart will not apply the firmware
-								Write-CMLogEntry -Value "BIOS update staged successfully, however a full power cycle (cold boot) is required to apply the firmware. A warm restart will not complete the update." -Severity 2
-								$TSEnvironment.Value("SMSTSBIOSUpdateColdBootRequired") = "True"
-								$TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
-								$TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
-							}
-							4 {
-								Write-CMLogEntry -Value "A hard dependency was not met by the flash utility (exit code 4), the required prerequisite BIOS version or hardware is missing. Please review the log file located at $($BIOSLogFile)" -Severity 3; exit 4
-							}
-							5 {
-								Write-CMLogEntry -Value "The flash utility refused to run on this system (exit code 5, qualification error). This cannot be bypassed with the force switch. Please review the log file located at $($BIOSLogFile)" -Severity 3; exit 5
-							}
-							10 {
-								# Code 10 is package-specific and is not assigned by Dell's generic DUP exit-code table; client BIOS packages commonly use it for a power prerequisite.
-								Write-CMLogEntry -Value "The BIOS utility returned package-specific exit code 10. Verify AC power and battery requirements, then review the log file located at $($BIOSLogFile)" -Severity 3; exit 10
-							}
-							default {
-								Write-CMLogEntry -Value "An error occured while updating the system BIOS during OS offline phase, exit code was $($FlashProcess.ExitCode). Please review the log file located at $($BIOSLogFile)" -Severity 3; exit $FlashProcess.ExitCode
-							}
+						# Evaluate documented DUP codes as integers. Regex matching such as "0|2" would also accept 10, 12, 20 and 120.
+						$ExitCodeResult = Resolve-DellBIOSUpdateExitCode -ExitCode $FlashProcess.ExitCode -BIOSLogFile $BIOSLogFile -Phase "OS offline" -WinPE $true
+						if ($ExitCodeResult -ne 0) {
+							exit $ExitCodeResult
 						}
 						
 					}
@@ -244,24 +321,39 @@ Process {
 					# Detect BitLocker status through CIM instead of parsing localized Manage-Bde output
 					$OSVolumeEncypted = $false
 					try {
-						$OSVolume = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction Stop | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
-						if (($OSVolume -ne $null) -and ($OSVolume.ProtectionStatus -eq 1)) {
-							$OSVolumeEncypted = $true
-						}
+						$OSVolumes = @(Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction Stop | Where-Object { $_.DriveLetter -eq $env:SystemDrive })
 					}
 					catch [System.Exception] {
 						Write-CMLogEntry -Value "Unable to determine BitLocker status for volume $($env:SystemDrive). Error message: $($_.Exception.Message)" -Severity 3; exit 1
 					}
+					if (($OSVolumes.Count -ne 1) -or ($OSVolumes[0].ProtectionStatus -notin @(0, 1))) {
+						Write-CMLogEntry -Value "BitLocker inventory did not return one supported protection state for volume $($env:SystemDrive). BIOS update is blocked." -Severity 3; exit 1
+					}
+					$OSVolume = $OSVolumes[0]
+					$OSVolumeEncypted = $OSVolume.ProtectionStatus -eq 1
 					
 					# Supend Bitlocker if $OSVolumeEncypted is $true, remember to re-enable BitLocker after the flashing has occurred
 					if ($OSVolumeEncypted -eq $true) {
 						Write-CMLogEntry -Value "Suspending BitLocker protected volume: $($env:SystemDrive)" -Severity 1
-						Manage-Bde -Protectors -Disable $env:SystemDrive | Out-Null
+						Manage-Bde -Protectors -Disable $env:SystemDrive -RebootCount 1 | Out-Null
+						if ($LASTEXITCODE -ne 0) {
+							Write-CMLogEntry -Value "Failed to suspend BitLocker protection on volume $($env:SystemDrive). Manage-Bde returned exit code $($LASTEXITCODE)." -Severity 3; exit 1
+						}
+						$Script:BitLockerSuspendedByScript = $true
 
 						# Confirm that protection was actually suspended before flashing, a locked volume during flash can render the device unbootable
-						$OSVolume = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
+						try {
+							$OSVolume = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction Stop | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
+						}
+						catch [System.Exception] {
+							Write-CMLogEntry -Value "Unable to verify BitLocker suspension on volume $($env:SystemDrive). Error message: $($_.Exception.Message)" -Severity 3
+							$null = Enable-BitLockerProtection
+							exit 1
+						}
 						if (($OSVolume -eq $null) -or ($OSVolume.ProtectionStatus -ne 0)) {
-							Write-CMLogEntry -Value "Failed to suspend BitLocker protection on volume $($env:SystemDrive), aborting BIOS update to avoid leaving the device in an unbootable state." -Severity 3; exit 1
+							Write-CMLogEntry -Value "Failed to suspend BitLocker protection on volume $($env:SystemDrive), aborting BIOS update to avoid leaving the device in an unbootable state." -Severity 3
+							$null = Enable-BitLockerProtection
+							exit 1
 						}
 					}
 					
@@ -270,7 +362,7 @@ Process {
 						if (([Environment]::Is64BitOperatingSystem) -eq $true) {
 							Write-CMLogEntry -Value "Starting 64-bit flash BIOS update process" -Severity 1
 							if (-not([System.String]::IsNullOrEmpty($Password))) {
-								Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches -replace $Password, "<password removed>")" -Severity 1
+								Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches -replace [regex]::Escape($Password), "<password removed>")" -Severity 1
 							}
 							else {
 								Write-CMLogEntry -Value "Using the following switches for Flash64W.exe: $($FlashSwitches)" -Severity 1
@@ -297,7 +389,7 @@ Process {
 
 							Write-CMLogEntry -Value "Starting 32-bit flash BIOS update process" -Severity 1
 							if (-not([System.String]::IsNullOrEmpty($Password))) {
-								Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FileSwitches -replace $Password, "<password removed>")" -Severity 1
+								Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FileSwitches -replace [regex]::Escape($Password), "<password removed>")" -Severity 1
 							}
 							else {
 								Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FileSwitches)" -Severity 1
@@ -310,56 +402,21 @@ Process {
 						
 					}
 					catch [System.Exception] {
-						Write-CMLogEntry -Value "An error occured while updating the system BIOS in OS online phase. Error message: $($_.Exception.Message)" -Severity 3; exit 1
+						Write-CMLogEntry -Value "An error occured while updating the system BIOS in OS online phase. Error message: $($_.Exception.Message)" -Severity 3
+						$null = Enable-BitLockerProtection
+						exit 1
 					}
 
 					# Evaluate the exit code returned by the flash utility, previously the result was discarded and every run was reported as a success
 					Write-CMLogEntry -Value "Flash utility exit code: $($FlashExitCode)" -Severity 1
-					switch ($FlashExitCode) {
-						0 {
-							# SUCCESSFUL - update applied, no restart required
-							Write-CMLogEntry -Value "BIOS update completed successfully, no restart is required" -Severity 1
+					$ExitCodeResult = Resolve-DellBIOSUpdateExitCode -ExitCode $FlashExitCode -BIOSLogFile $BIOSLogFile -Phase "OS online"
+					if (($Script:BitLockerSuspendedByScript -eq $true) -and ($FlashExitCode -notin @(2, 6, 14, 15, 16, 18, 19))) {
+						if (-not (Enable-BitLockerProtection)) {
+							exit 1
 						}
-						{ $_ -in @(2, 14) } {
-							# REBOOT_REQUIRED - the update is staged and a restart applies it
-							Write-CMLogEntry -Value "BIOS update completed successfully, a restart is required to apply the new BIOS" -Severity 1
-							if ($TSEnvironment -ne $null) {
-								$TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
-							}
-						}
-						3 {
-							# DEP_SOFT_ERROR - typically the same version is already installed or a downgrade was attempted, non-blocking
-							Write-CMLogEntry -Value "Flash utility reported a soft dependency error (exit code 3), the system is likely already running this BIOS version. No update was applied." -Severity 2
-						}
-						6 {
-							# REBOOTING_SYSTEM - the flash utility is restarting the device itself, do not trigger a second restart
-							Write-CMLogEntry -Value "Flash utility has taken control of the power state and is restarting the system (exit code 6)" -Severity 1
-						}
-						13 {
-							# UPDATE_SUCCESSFUL with unmet soft dependencies
-							Write-CMLogEntry -Value "BIOS update completed successfully, however one or more soft dependencies were not met (exit code 13)" -Severity 2
-						}
-						{ $_ -in @(15, 16) } {
-							# CONTAINER_POWER_CYCLE_REQUIRED - a full power cycle is required, a warm restart will not apply the firmware
-							Write-CMLogEntry -Value "BIOS update completed successfully, however a full power cycle (cold boot) is required to apply the firmware. A warm restart will not complete the update." -Severity 2
-							if ($TSEnvironment -ne $null) {
-								$TSEnvironment.Value("SMSTSBIOSUpdateColdBootRequired") = "True"
-								$TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
-							}
-						}
-						4 {
-							Write-CMLogEntry -Value "A hard dependency was not met by the flash utility (exit code 4), the required prerequisite BIOS version or hardware is missing. Please review the log file located at $($BIOSLogFile)" -Severity 3; exit 4
-						}
-						5 {
-							Write-CMLogEntry -Value "The flash utility refused to run on this system (exit code 5, qualification error). This cannot be bypassed with the force switch. Please review the log file located at $($BIOSLogFile)" -Severity 3; exit 5
-						}
-						10 {
-							# Code 10 is package-specific and is not assigned by Dell's generic DUP exit-code table; client BIOS packages commonly use it for a power prerequisite.
-							Write-CMLogEntry -Value "The BIOS utility returned package-specific exit code 10. Verify AC power and battery requirements, then review the log file located at $($BIOSLogFile)" -Severity 3; exit 10
-						}
-						default {
-							Write-CMLogEntry -Value "BIOS update failed with exit code $($FlashExitCode). Please review the log file located at $($BIOSLogFile)" -Severity 3; exit $FlashExitCode
-						}
+					}
+					if ($ExitCodeResult -ne 0) {
+						exit $ExitCodeResult
 					}
 				}
 			}

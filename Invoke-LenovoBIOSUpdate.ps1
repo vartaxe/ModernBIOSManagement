@@ -60,6 +60,12 @@ Begin {
 	}
 }
 Process {
+	$LogsDirectory = Join-Path -Path $env:SystemRoot -ChildPath "Temp"
+	$LogDirectoryPath = if ($null -ne $TSEnvironment) { $TSEnvironment.Value("_SMSTSLogPath") } else { $null }
+	if ([string]::IsNullOrEmpty($LogDirectoryPath)) {
+		$LogDirectoryPath = $LogsDirectory
+	}
+
 	# Functions
 	function Write-CMLogEntry {
 		param (
@@ -75,7 +81,7 @@ Process {
 			[string]$FileName = "Invoke-LenovoBIOSUpdate.log"
 		)
 		# Determine log file location
-		$LogFilePath = Join-Path -Path $Script:TSEnvironment.Value("_SMSTSLogPath") -ChildPath $FileName
+		$LogFilePath = Join-Path -Path $LogDirectoryPath -ChildPath $FileName
 		
 		# Construct time stamp for log entry
 		$Time = -join @((Get-Date -Format "HH:mm:ss.fff"), "+", (Get-CimInstance -ClassName Win32_TimeZone | Select-Object -ExpandProperty Bias))
@@ -93,21 +99,59 @@ Process {
 		try {
 			Out-File -InputObject $LogText -Append -NoClobber -Encoding Default -FilePath $LogFilePath -ErrorAction Stop
 		}
+
 		catch [System.Exception] {
 			Write-Warning -Message "Unable to append log entry to Invoke-LenovoBIOSUpdate.log file. Error message: $($_.Exception.Message)"
 		}
+	}
+
+	function Enable-BitLockerProtection {
+		if ($Script:BitLockerSuspendedByScript -ne $true) {
+			return $true
+		}
+
+		Write-CMLogEntry -Value "Re-enabling BitLocker protection on volume: $($env:SystemDrive)" -Severity 1
+		Manage-Bde -Protectors -Enable $env:SystemDrive | Out-Null
+		if ($LASTEXITCODE -ne 0) {
+			Write-CMLogEntry -Value "Failed to re-enable BitLocker protection on volume $($env:SystemDrive). Manage-Bde returned exit code $($LASTEXITCODE)." -Severity 3
+			return $false
+		}
+
+		try {
+			$Volume = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction Stop | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
+			if (($null -eq $Volume) -or ($Volume.ProtectionStatus -ne 1)) {
+				Write-CMLogEntry -Value "BitLocker protection did not return to the protected state on volume $($env:SystemDrive)." -Severity 3
+				return $false
+			}
+		}
+		catch [System.Exception] {
+			Write-CMLogEntry -Value "Unable to verify that BitLocker protection was re-enabled on volume $($env:SystemDrive). Error message: $($_.Exception.Message)" -Severity 3
+			return $false
+		}
+
+		$Script:BitLockerSuspendedByScript = $false
+		return $true
 	}
 	
 	# A virtual machine has no physical firmware flash chip. The guest BIOS/UEFI is a software template
 	# owned by the hypervisor, so vendor flash utilities refuse to execute and fail the task sequence.
 	# Skip gracefully instead.
-	$ComputerSystem = Get-CimInstance -ClassName "Win32_ComputerSystem" -ErrorAction SilentlyContinue
-	if ($ComputerSystem -ne $null) {
-		$VirtualMachineModels = @("Virtual Machine", "VMware Virtual Platform", "VMware7,1", "VMware20,1", "VirtualBox", "HVM domU", "KVM", "QEMU Virtual Machine", "Standard PC (Q35 + ICH9, 2009)", "Standard PC (i440FX + PIIX, 1996)", "Parallels Virtual Platform", "Google Compute Engine", "AHV")
-		if (($ComputerSystem.Model -in $VirtualMachineModels) -or ($ComputerSystem.Manufacturer -match "VMware|QEMU|innotek|Xen|Parallels|Nutanix|Red Hat")) {
-			Write-CMLogEntry -Value "Virtual machine detected ('$($ComputerSystem.Manufacturer) $($ComputerSystem.Model)'). BIOS/UEFI firmware is managed by the hypervisor, skipping BIOS flash" -Severity 2
-			exit 0
-		}
+	try {
+		$ComputerSystems = @(Get-CimInstance -ClassName "Win32_ComputerSystem" -ErrorAction Stop)
+	}
+	catch [System.Exception] {
+		Write-CMLogEntry -Value "Unable to inventory the computer platform safely. BIOS update is blocked. Error message: $($_.Exception.Message)" -Severity 3
+		exit 1
+	}
+	if (($ComputerSystems.Count -ne 1) -or [string]::IsNullOrWhiteSpace([string]$ComputerSystems[0].Model) -or [string]::IsNullOrWhiteSpace([string]$ComputerSystems[0].Manufacturer)) {
+		Write-CMLogEntry -Value "Computer platform inventory did not return one complete system identity. BIOS update is blocked." -Severity 3
+		exit 1
+	}
+	$ComputerSystem = $ComputerSystems[0]
+	$VirtualMachineModels = @("Virtual Machine", "VMware Virtual Platform", "VMware7,1", "VMware20,1", "VMware Virtual Platform None", "VirtualBox", "HVM domU", "KVM", "QEMU Virtual Machine", "Standard PC (Q35 + ICH9, 2009)", "Standard PC (i440FX + PIIX, 1996)", "Parallels Virtual Platform", "Google Compute Engine", "AHV")
+	if (($ComputerSystem.Model -in $VirtualMachineModels) -or ($ComputerSystem.Manufacturer -match "VMware|QEMU|innotek|Xen|Parallels|Nutanix|Red Hat|Google|Amazon EC2|OpenStack")) {
+		Write-CMLogEntry -Value "Virtual machine detected ('$($ComputerSystem.Manufacturer) $($ComputerSystem.Model)'). BIOS/UEFI firmware is managed by the hypervisor, skipping BIOS flash" -Severity 2
+		exit 0
 	}
 	
 	Set-Location -Path $Path
@@ -122,7 +166,7 @@ Process {
 		# independent if-statement, so when OSDisk was populated but did not contain the DLL the
 		# remaining fallbacks were never evaluated and the missing DLL went unreported.
 		$OLEDLGCandidates = New-Object -TypeName System.Collections.ArrayList
-		if (([string]::IsNullOrEmpty($TSEnvironment.Value("OSDisk"))) -eq $false) {
+		if (($null -ne $TSEnvironment) -and (([string]::IsNullOrEmpty($TSEnvironment.Value("OSDisk"))) -eq $false)) {
 			$OLEDLGCandidates.Add((Join-Path -Path $TSEnvironment.Value("OSDisk") -ChildPath "Windows\System32\OLEDLG.dll")) | Out-Null
 		}
 		foreach ($DriveLetter in @("C:", "D:", "X:")) {
@@ -188,7 +232,7 @@ Process {
 	}
 	
 	# Set log file location
-	$LogFilePath = Join-Path -Path $TSEnvironment.Value("_SMSTSLogPath") -ChildPath $LogFileName
+	$LogFilePath = Join-Path -Path $LogDirectoryPath -ChildPath $LogFileName
 	
 	if (($TSEnvironment -ne $null) -and ($TSEnvironment.Value("_SMSTSinWinPE") -eq $true)) {
 		try {
@@ -205,7 +249,7 @@ Process {
 			$WinUPTPLog = Get-ChildItem -Path $Path -Filter "winuptp.log" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
 			if (-not([string]::IsNullOrEmpty($WinUPTPLog))) {
 				Write-CMLogEntry -Value "winuptp.log file path is $($WinUPTPLog)" -Severity 1
-				$SMSTSLogPath = Join-Path -Path $TSEnvironment.Value("_SMSTSLogPath") -ChildPath "winuptp.log"
+				$SMSTSLogPath = Join-Path -Path $LogDirectoryPath -ChildPath "winuptp.log"
 				Copy-Item -Path $WinUPTPLog -Destination $SMSTSLogPath -Force -ErrorAction SilentlyContinue
 			}
 			
@@ -214,10 +258,13 @@ Process {
 			switch ($FlashExitCode) {
 				0 {
 					Write-CMLogEntry -Value "BIOS update completed with exit code $($FlashExitCode). A restart is required to apply the update" -Severity 1
+					if ($TSEnvironment -ne $null) {
+						$TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
+					}
 				}
 				1073807364 {
-					# 0x3FFF0004, reported by the community as a non-fatal result for WinUPTP
-					Write-CMLogEntry -Value "BIOS update returned exit code $($FlashExitCode). This code is commonly reported as a non-fatal result, review winuptp.log to confirm the outcome" -Severity 2
+					Write-CMLogEntry -Value "BIOS update returned undocumented exit code $($FlashExitCode) (0x3FFF0004). The update outcome cannot be verified; review winuptp.log." -Severity 3
+					exit 1
 				}
 				default {
 					Write-CMLogEntry -Value "BIOS update failed with exit code $($FlashExitCode)" -Severity 3; exit $FlashExitCode
@@ -231,19 +278,43 @@ Process {
 	else {
 		# Detect BitLocker status for the operating system volume using CIM instead of parsing
 		# localized manage-bde console output, which is unreliable on non-English systems.
-		$OSVolume = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
-		$OSVolumeEncrypted = if (($OSVolume -ne $null) -and ($OSVolume.ProtectionStatus -eq 1)) { $true } else { $false }
+		try {
+			$OSVolumes = @(Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction Stop | Where-Object { $_.DriveLetter -eq $env:SystemDrive })
+		}
+		catch [System.Exception] {
+			Write-CMLogEntry -Value "Unable to determine BitLocker status for volume $($env:SystemDrive). BIOS update is blocked. Error message: $($_.Exception.Message)" -Severity 3
+			exit 1
+		}
+		if (($OSVolumes.Count -ne 1) -or ($OSVolumes[0].ProtectionStatus -notin @(0, 1))) {
+			Write-CMLogEntry -Value "BitLocker inventory did not return one supported protection state for volume $($env:SystemDrive). BIOS update is blocked." -Severity 3
+			exit 1
+		}
+		$OSVolume = $OSVolumes[0]
+		$OSVolumeEncrypted = $OSVolume.ProtectionStatus -eq 1
 		
 		# Suspend BitLocker if the operating system volume is protected
 		if ($OSVolumeEncrypted -eq $true) {
 			Write-CMLogEntry -Value "Suspending BitLocker protected volume: $($env:SystemDrive)" -Severity 1
-			Manage-Bde -Protectors -Disable $env:SystemDrive
+			Manage-Bde -Protectors -Disable $env:SystemDrive -RebootCount 1 | Out-Null
+			if ($LASTEXITCODE -ne 0) {
+				Write-CMLogEntry -Value "Failed to suspend BitLocker protection on volume $($env:SystemDrive). Manage-Bde returned exit code $($LASTEXITCODE)." -Severity 3; exit 1
+			}
+			$Script:BitLockerSuspendedByScript = $true
 			
 			# Verify that protection was actually suspended before flashing, a failed suspension
 			# combined with a BIOS update can leave the device requiring the recovery key
-			$OSVolume = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
+			try {
+				$OSVolume = Get-CimInstance -Namespace "root\cimv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction Stop | Where-Object { $_.DriveLetter -eq $env:SystemDrive }
+			}
+			catch [System.Exception] {
+				Write-CMLogEntry -Value "Unable to verify BitLocker suspension on volume $($env:SystemDrive). Error message: $($_.Exception.Message)" -Severity 3
+				$null = Enable-BitLockerProtection
+				exit 1
+			}
 			if (($OSVolume -eq $null) -or ($OSVolume.ProtectionStatus -ne 0)) {
-				Write-CMLogEntry -Value "Failed to suspend BitLocker protection on volume $($env:SystemDrive), aborting BIOS update to prevent a recovery key prompt" -Severity 3; exit 1
+				Write-CMLogEntry -Value "Failed to suspend BitLocker protection on volume $($env:SystemDrive), aborting BIOS update to prevent a recovery key prompt" -Severity 3
+				$null = Enable-BitLockerProtection
+				exit 1
 			}
 		}
 		
@@ -260,19 +331,27 @@ Process {
 			switch ($FlashExitCode) {
 				0 {
 					Write-CMLogEntry -Value "BIOS update completed with exit code $($FlashExitCode). A restart is required to apply the update" -Severity 1
+					if ($TSEnvironment -ne $null) {
+						$TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
+					}
 				}
 				1073807364 {
-					# 0x3FFF0004, reported by the community as a non-fatal result for WinUPTP
-					Write-CMLogEntry -Value "BIOS update returned exit code $($FlashExitCode). This code is commonly reported as a non-fatal result, review winuptp.log to confirm the outcome" -Severity 2
+					Write-CMLogEntry -Value "BIOS update returned undocumented exit code $($FlashExitCode) (0x3FFF0004). The update outcome cannot be verified; review winuptp.log." -Severity 3
+					$null = Enable-BitLockerProtection
+					exit 1
 				}
 				default {
-					Write-CMLogEntry -Value "BIOS update failed with exit code $($FlashExitCode)" -Severity 3; exit $FlashExitCode
+					Write-CMLogEntry -Value "BIOS update failed with exit code $($FlashExitCode)" -Severity 3
+					$null = Enable-BitLockerProtection
+					exit $FlashExitCode
 				}
 			}
 		}
 		catch [System.Exception]
 		{
-			Write-CMLogEntry -Value "An error occured while updating the system BIOS in OS online phase. Error message: $($_.Exception.Message)" -Severity 3; exit 1
+			Write-CMLogEntry -Value "An error occured while updating the system BIOS in OS online phase. Error message: $($_.Exception.Message)" -Severity 3
+			$null = Enable-BitLockerProtection
+			exit 1
 		}
 	}
 }

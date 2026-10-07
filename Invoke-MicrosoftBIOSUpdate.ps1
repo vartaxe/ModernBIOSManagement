@@ -60,7 +60,7 @@ Process {
 		    [string]$FileName = $Script:LogFileName
 	    )
 	    # Determine log file location, falling back to the local logs directory when not running inside a task sequence
-        $LogDirectoryPath = $TSEnvironment.Value("_SMSTSLogPath")
+        $LogDirectoryPath = if ($null -ne $TSEnvironment) { $TSEnvironment.Value("_SMSTSLogPath") } else { $null }
         if ([string]::IsNullOrEmpty($LogDirectoryPath)) {
             $LogDirectoryPath = $LogsDirectory
         }
@@ -127,17 +127,26 @@ Process {
 	
 	# A virtual machine has no physical firmware flash chip. The guest BIOS/UEFI is a software template
 	# owned by the hypervisor, so firmware payloads cannot be applied inside the guest. Skip gracefully.
-	$ComputerSystem = Get-CimInstance -ClassName "Win32_ComputerSystem" -ErrorAction SilentlyContinue
-	if ($ComputerSystem -ne $null) {
-		$VirtualMachineModels = @("Virtual Machine", "VMware Virtual Platform", "VMware7,1", "VMware20,1", "VirtualBox", "HVM domU", "KVM", "QEMU Virtual Machine", "Standard PC (Q35 + ICH9, 2009)", "Standard PC (i440FX + PIIX, 1996)", "Parallels Virtual Platform", "Google Compute Engine", "AHV")
-		if (($ComputerSystem.Model -in $VirtualMachineModels) -or ($ComputerSystem.Manufacturer -match "VMware|QEMU|innotek|Xen|Parallels|Nutanix|Red Hat")) {
-			Write-CMLogEntry -Value "Virtual machine detected ('$($ComputerSystem.Manufacturer) $($ComputerSystem.Model)'). BIOS/UEFI firmware is managed by the hypervisor, skipping BIOS flash" -Severity 2
-			exit 0
-		}
+	try {
+		$ComputerSystems = @(Get-CimInstance -ClassName "Win32_ComputerSystem" -ErrorAction Stop)
+	}
+	catch [System.Exception] {
+		Write-CMLogEntry -Value "Unable to inventory the computer platform safely. Firmware update is blocked. Error message: $($_.Exception.Message)" -Severity 3
+		exit 1
+	}
+	if (($ComputerSystems.Count -ne 1) -or [string]::IsNullOrWhiteSpace([string]$ComputerSystems[0].Model) -or [string]::IsNullOrWhiteSpace([string]$ComputerSystems[0].Manufacturer)) {
+		Write-CMLogEntry -Value "Computer platform inventory did not return one complete system identity. Firmware update is blocked." -Severity 3
+		exit 1
+	}
+	$ComputerSystem = $ComputerSystems[0]
+	$VirtualMachineModels = @("Virtual Machine", "VMware Virtual Platform", "VMware7,1", "VMware20,1", "VMware Virtual Platform None", "VirtualBox", "HVM domU", "KVM", "QEMU Virtual Machine", "Standard PC (Q35 + ICH9, 2009)", "Standard PC (i440FX + PIIX, 1996)", "Parallels Virtual Platform", "Google Compute Engine", "AHV")
+	if (($ComputerSystem.Model -in $VirtualMachineModels) -or ($ComputerSystem.Manufacturer -match "VMware|QEMU|innotek|Xen|Parallels|Nutanix|Red Hat|Google|Amazon EC2|OpenStack")) {
+		Write-CMLogEntry -Value "Virtual machine detected ('$($ComputerSystem.Manufacturer) $($ComputerSystem.Model)'). BIOS/UEFI firmware is managed by the hypervisor, skipping BIOS flash" -Severity 2
+		exit 0
 	}
 	
 	# Default to task sequence variable set in detection script
-	if (-not([string]::IsNullOrEmpty($TSEnvironment.Value("OSDBIOSPackage01")))){
+	if (($null -ne $TSEnvironment) -and (-not([string]::IsNullOrEmpty($TSEnvironment.Value("OSDBIOSPackage01"))))) {
 		Write-CMLogEntry -Value "Using BIOS package location set in OSDBIOSPackage01 TS variable" -Severity 1
 		$OSDFirmwarePackageLocation = $TSEnvironment.Value("OSDBIOSPackage01")
 	}
@@ -160,6 +169,9 @@ Process {
 			}
 			3010 {
 				Write-CMLogEntry -Value "Firmware update staging completed successfully, a reboot is required to apply the firmware" -Severity 1
+				if ($TSEnvironment -ne $null) {
+					$TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
+				}
 			}
 			default {
 				Write-CMLogEntry -Value "Firmware update staging failed with exit code: $($ApplyFirmwareInvocation)" -Severity 3
