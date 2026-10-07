@@ -98,8 +98,8 @@
 	3.0.7 - (2026-09-03) - Added the missing XMLPackage parameter set (MSEndpointMgr/ModernBIOSManagement#32):
 					 - The script body already implemented XML (non-AdminService) package logic -- Get-DeploymentType, Get-BIOSPackages and the AdminService phase all branch on the 'XMLPackage' parameter set name -- but the parameter set itself was never declared in the param block. Running the script with -XMLPackage therefore failed at parameter binding ("A parameter cannot be found that matches parameter name 'XMLPackage'"), making XML/standalone (webservice-less) BIOS deployments impossible. Added the -XMLPackage switch and -XMLDeploymentType parameter (BareMetal/BIOSUpdate), and extended -Filter, -OperationalMode and -ForceDownload to the XMLPackage parameter set.
 					 - Fixed the "latest package by creation date" selection sorting SourceDate as text rather than as a date. Packages read from the XML logic file always carry SourceDate as a string, so Sort-Object compared text and, with a culture formatted stamp ('03/09/2026 12:00:00'), an older BIOS package could be selected whenever multiple packages matched a device. New ConvertTo-PackageSourceDate helper normalises ISO 8601, WMI DMTF, culture formatted and DateTime values to a sortable [datetime] (unparsable values sort last), and all five Dell/Lenovo/HP/Microsoft selection sorts now use it.
-	3.0.8 - (2026-09-03) - Added AdminService authentication resiliency for the ConfigMgr 2603 security changes:
-					 - ConfigMgr 2603 rejects AdminService authentication that uses a bare service account user name (e.g. 'svc-osd'), a configuration that worked on earlier builds, so existing task sequences began failing with 401 Unauthorized. Get-AuthCredential now warns when the configured user name is not in UPN format and recommends updating it, naming the alternative formats that will be attempted.
+	3.0.8 - (2026-09-03) - Added AdminService authentication resiliency for environments that reject a bare service account user name:
+					 - Some environments return 401 Unauthorized when AdminService authentication uses a bare account name (e.g. 'svc-osd'). Microsoft does not document this as a ConfigMgr 2603 UPN-only requirement. Get-AuthCredential now identifies a non-UPN value and names the domain-qualified alternatives that will be attempted.
 					 - Get-AuthDomainName resolves the Active Directory DNS domain from, in order: the OSDDOMAINNAME / OSDJoinDomainName task sequence variables, the domain membership of the running device (full OS only), and the DNS suffix of the AdminService endpoint or management point host name (the only sources available in WinPE).
 					 - Get-AdminServiceItem now retries the request with the UPN form (user@domain.com) and then the down-level form (DOMAIN\user) when, and only when, the AdminService responds with 401 Unauthorized. The configured value is always attempted first so a working environment is unchanged, the working credential is reused for the remainder of the run, and a run where every format is rejected logs explicit guidance to move the account to UPN format.
 					 - Certificate validation failures are surfaced as errors. AdminService must present a certificate trusted by the task-sequence environment; the script never installs a process-wide certificate-validation bypass.
@@ -835,7 +835,7 @@ Process {
 			$NetBIOSName = [string]::Empty
 		}
 
-		# UPN form -- the format required from ConfigMgr 2603 onwards
+		# UPN form -- the preferred unambiguous domain-qualified format
 		if (-not [string]::IsNullOrWhiteSpace($DomainName)) {
 			$UserPrincipalName = "$($AccountName)@$($DomainName)"
 			if ($Candidates -notcontains $UserPrincipalName) {
@@ -909,13 +909,12 @@ Process {
 		# Construct PSCredential object for authentication
 		$Script:Credential = New-AuthCredential -UserName $Script:UserName
 
-		# Build the ordered list of user name formats to attempt against the AdminService. ConfigMgr
-		# 2603 introduced security changes that reject a service account supplied as a bare user name,
-		# a configuration that worked on earlier builds, so warn when the configured value is not a UPN
-		# and prepare the domain qualified alternatives for Get-AdminServiceItem to fall back on.
+		# Build an ordered list of user name formats to attempt when an environment rejects the
+		# configured value with 401 Unauthorized. Microsoft does not document a ConfigMgr 2603
+		# UPN-only requirement, so always try the configured value first.
 		$Script:CredentialCandidates = Get-AuthUserNameCandidate -UserName $Script:UserName
 		if ($Script:UserName -notmatch "@") {
-			Write-CMLogEntry -Value " - WARNING: The service account user name is not in UPN format. ConfigMgr 2603 and later reject AdminService authentication that uses a bare user name, it is recommended that the service account is specified in the UPN format (user@domain.com)" -Severity 2
+			Write-CMLogEntry -Value " - The service account user name is not in UPN format. If the configured value is rejected, domain-qualified alternatives will be attempted; UPN format (user@domain.com) is recommended to avoid ambiguity" -Severity 2
 			if (($Script:CredentialCandidates | Measure-Object).Count -gt 1) {
 				$AlternativeNames = ($Script:CredentialCandidates | Select-Object -Skip 1 | ForEach-Object { ConvertTo-ObfuscatedUserName -InputObject $PSItem }) -join ", "
 				Write-CMLogEntry -Value " - Alternative user name formats will be attempted automatically if the configured value is rejected: $($AlternativeNames)" -Severity 2
@@ -955,8 +954,7 @@ Process {
 
 				# Attempt each user name format in turn. The configured value is always first, so a
 				# working environment is unaffected; the domain qualified alternatives are only used
-				# after the AdminService rejects the credentials with 401 Unauthorized, which is what
-				# ConfigMgr 2603 and later return for a service account supplied as a bare user name.
+				# after the AdminService rejects the credentials with 401 Unauthorized.
 				$CandidateList = @($Script:CredentialCandidates)
 				if ($CandidateList.Count -eq 0) {
 					$CandidateList = @($Script:UserName)
@@ -1002,7 +1000,7 @@ Process {
 					$FailureMessage = if ($null -ne $LastErrorRecord) { $LastErrorRecord.Exception.Message } else { "No response was returned from the AdminService endpoint" }
 					Write-CMLogEntry -Value " - Failed to retrieve available package items from AdminService endpoint. Error message: $($FailureMessage)" -Severity 3
 					if (Test-AuthenticationFailure -ErrorRecord $LastErrorRecord) {
-						Write-CMLogEntry -Value " - All attempted user name formats were rejected by the AdminService. ConfigMgr 2603 introduced security changes that require the service account to be specified in UPN format (user@domain.com), update the MDMUserName task sequence variable or the UserName parameter accordingly" -Severity 3
+						Write-CMLogEntry -Value " - All attempted user name formats were rejected by the AdminService. Verify the credentials, account policy, endpoint configuration, and accepted user name format; prefer UPN format (user@domain.com) for the MDMUserName task sequence variable or UserName parameter" -Severity 3
 					}
 
 					# Throw terminating error
