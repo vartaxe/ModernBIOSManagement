@@ -4,6 +4,14 @@ This repository is a maintained fork of [MSEndpointMgr/ModernBIOSManagement](htt
 
 For implementation instructions, please go to https://www.msendpointmgr.com/modern-bios-management
 
+## Supported hardware and package-selection modes
+
+BIOS package selection and application are implemented for Dell, HP/Hewlett-Packard, Lenovo, and Microsoft devices. This scope matches the downloader's manufacturer allow-list and the four dedicated apply scripts: `Invoke-DellBIOSUpdate.ps1`, `Invoke-HPBIOSUpdate.ps1`, `Invoke-LenovoBIOSUpdate.ps1`, and `Invoke-MicrosoftBIOSUpdate.ps1`.
+
+The debug-mode manufacturer values Fujitsu, Panasonic, Viglen, and AZW are inventory and package-matching test inputs; they do not represent supported BIOS apply implementations. Acer, ASUS, Intel/NUC, and generic OEM BIOS flows are not implemented. Alienware devices may follow the Dell path only when Dell tooling supports the device and the package uses compatible Dell metadata; Alienware is not separately validated by this project.
+
+The modern downloader supports two package-selection sources. AdminService mode queries ConfigMgr for package metadata online. `XMLPackage` mode reads package metadata offline from a pre-downloaded `DriverPackages.xml` file and uses `XMLDeploymentType` to choose `BareMetal` or `BIOSUpdate` behavior. In this documentation, online and offline describe how package-selection metadata is obtained; they do not refer to servicing a mounted or offline Windows image.
+
 BIOS package matching uses the manufacturer, model/SystemSKU and BIOS version or release date, not the Windows release or build number. Windows feature updates do not require a version-mapping entry in these scripts. That includes Windows 11 26H1 (build 28000, a specialized release for selected new hardware) and Windows 11 26H2 (build 26300, the annual enablement-package release). Microsoft Surface firmware delivered through driver packages is still handled as such.
 
 The scripts use `Get-CimInstance` for local hardware, ConfigMgr client, time-zone and BitLocker queries. In WinPE, include the WinPE-WMI, WinPE-NetFX, WinPE-Scripting and WinPE-PowerShell optional components and their dependencies. CIM queries are local and do not require WinRM configuration.
