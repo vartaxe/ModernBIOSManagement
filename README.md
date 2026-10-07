@@ -1,4 +1,7 @@
-# ModernBIOSManagement
+# Modern BIOS Management (maintained fork)
+
+This repository is a maintained fork of [MSEndpointMgr/ModernBIOSManagement](https://github.com/MSEndpointMgr/ModernBIOSManagement), preserving the upstream MIT license and attribution. It contains community maintenance updates while remaining compatible with the upstream project.
+
 For implementation instructions, please go to https://www.msendpointmgr.com/modern-bios-management
 
 BIOS package matching uses the manufacturer, model/SystemSKU and BIOS version or release date, not the Windows release or build number. Windows feature updates do not require a version-mapping entry in these scripts. That includes Windows 11 26H1 (build 28000, a specialized release for selected new hardware) and Windows 11 26H2 (build 26300, the annual enablement-package release). Microsoft Surface firmware delivered through driver packages is still handled as such.
