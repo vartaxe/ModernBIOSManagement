@@ -1,4 +1,12 @@
-# Modern BIOS Management (maintained fork)
+# Modern BIOS Management (archived compatibility source)
+
+> **Maintenance moved:** Active maintenance of
+> `Invoke-CMDownloadBIOSPackage.ps1` and the Dell, HP, Lenovo, and Microsoft
+> BIOS apply scripts now takes place in
+> [`vartaxe/DriverAutomationTool`](https://github.com/vartaxe/DriverAutomationTool/tree/main/Driver%20Automation%20Tool/Scripts).
+> This repository is retained read-only for historical references, commit
+> provenance, and users who need the former standalone layout. Do not open new
+> maintenance work here.
 
 This repository is a maintained fork of [MSEndpointMgr/ModernBIOSManagement](https://github.com/MSEndpointMgr/ModernBIOSManagement), preserving the upstream MIT license and attribution. It contains community maintenance updates while remaining compatible with the upstream project.
 
