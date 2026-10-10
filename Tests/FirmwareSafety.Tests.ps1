@@ -1,3 +1,4 @@
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingConvertToSecureStringWithPlainText", "", Justification = "This standalone regression harness uses a fixed synthetic test password only to construct an in-memory PSCredential.")]
 [CmdletBinding()]
 param ()
 
