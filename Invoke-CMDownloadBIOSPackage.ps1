@@ -859,6 +859,7 @@ Process {
 	}
 
 	function New-AuthCredential {
+		[Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingConvertToSecureStringWithPlainText", "", Justification = "The task-sequence password is converted only in memory to the PSCredential required for AdminService authentication and is not persisted.")]
 		param (
 			[parameter(Mandatory = $true, HelpMessage = "Specify the user name to construct a credential object for.")]
 			[ValidateNotNullOrEmpty()]
